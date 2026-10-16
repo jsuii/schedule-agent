@@ -1,0 +1,10 @@
+{
+  "endpoint": "https://api.openai.com/v1/chat/completions",
+  "model": "your-tool-calling-model",
+  "api_key": "${LLM_API_KEY}",
+  "timezone": "Asia/Shanghai",
+  "database": "data/calendar.sqlite3",
+  "timeout_seconds": 30,
+  "turn_timeout_seconds": 90,
+  "max_iterations": 8
+}

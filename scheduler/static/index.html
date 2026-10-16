@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>留白 · 日程 Agent</title><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
+<body>
+<div class="shell">
+<header><a class="brand" href="/" aria-label="留白首页"><span class="brand-mark">白</span><div>留白<span class="brand-sub">给时间一点秩序</span></div></a><div class="header-right"><span id="mode" class="pill">正在连接</span><button id="new-chat" class="quiet">新对话 ↗</button></div></header>
+<main>
+<section class="conversation" aria-label="日程对话">
+<div class="intro"><div class="eyebrow">YOUR TIME, WELL SPENT</div><h1>把安排说出来，<br>把时间留给生活。</h1><p>查询、调整，或为下一件重要的事找个空档。</p></div>
+<div id="notice" class="notice" hidden></div>
+<div id="messages" class="messages" role="log" aria-live="polite"></div>
+<div id="proposal" hidden></div>
+<div id="candidates" hidden></div>
+<div id="trace" class="trace"></div>
+<div class="composer-wrap">
+<div id="suggestions" class="suggestions"><button data-prompt="我明天有什么安排？">查看明天的安排 ↗</button><button data-prompt="明天下午3点和老王开会一小时，地点会议室A">安排一个会议 ↗</button></div>
+<form id="chat-form"><label class="sr-only" for="input">描述日程需求</label><textarea id="input" rows="2" maxlength="4000" placeholder="例如：把和老王的会挪到后天下午2点…" required></textarea><button id="send" type="submit" aria-label="发送消息">↑</button></form>
+<div class="composer-note"><span id="processing">Enter 发送 · Shift + Enter 换行</span><span>写入前由你确认</span></div>
+</div>
+</section>
+<aside class="agenda" aria-label="日程列表"><div class="agenda-top"><div><div class="eyebrow">YOUR CALENDAR</div><h2>日程一览<span id="count">0</span></h2></div><button id="refresh" class="quiet" aria-label="刷新日程">↻</button></div><div class="timezone" id="timezone">Asia/Shanghai</div><label class="date-filter" for="date">查看日期<input type="date" id="date"></label><div class="agenda-label"><span id="date-label">所有安排</span><button id="all-dates" class="quiet small">全部日期</button></div><div id="events"></div><div class="aside-foot"><span class="dot"></span>本地日历 · 确认后保存</div></aside>
+</main><footer>留白 / SCHEDULE AGENT<span>让每一步安排，都有据可查。</span></footer>
+</div>
+</body></html>
