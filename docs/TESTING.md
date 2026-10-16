@@ -1,74 +1,80 @@
 # 测试与验收记录
 
-> 后续状态更新：已在用户授权下完成10次OpenRouter真实请求；追问、多轮创建、查询通过，修改未通过。以下未调用真实模型的描述为此前离线交付记录；当前结果以[真实联调报告](LIVE_TEST_2026-10-17.md)为准。最新离线套件56通过、2个默认跳过。
-日期：2026-10-17（Asia/Shanghai）。环境：macOS arm64、Python 3.12.15、Node.js 26.12.0。没有配置真实模型，未发送任何真实 LLM API 请求，未访问外部日历账号。
+最近验证：2026-10-17，Asia/Shanghai。环境macOS arm64、Python3.12.15、Node26.12.0。当前应用代码、mock测试与真实模型证据分开记录，历史失败报告保留。
 
-## 测试策略
+## 本轮实际结果
 
-只替换不稳定的模型边界：ScriptedModel按工具协议返回预设消息，HTTPX MockTransport校验真实provider请求。真实Calendar、SQLite、工具执行、Agent循环、FastAPI与确认端点均参与测试。每项使用tmp_path独立文件，不修改普通用户日历。
-
-模拟测试能证明工具选择后的执行、边界与恢复，**不能证明真实模型会做出同样决定、理解中文或兼容某个provider**。`test_live.py` 是另外的真实模型验收，默认跳过。没有以正则、规则分类器替代真实模型接口。
-
-## 实际命令与结果
-
-```bash
-python -m pytest --cov=scheduler --cov-report=term-missing -q
-ruff check scheduler tests
-ruff format --check scheduler tests
-node --check scheduler/static/app.js
-```
-
-最终本地与独立干净虚拟环境结果：**54 passed、2 skipped，0 failed；总Python语句覆盖率93%**。被跳过的两项都属于真实LLM联调。Ruff检查与格式检查、JavaScript语法检查通过。
-
-干净环境的Starlette 1.8.0 TestClient产生一个依赖弃用提示：使用httpx的测试客户端未来建议改用httpx2；当前HTTPX 0.28.1协议测试及全部HTTP集成仍通过。没有过滤或隐藏该warning；迁移测试传输不是本轮功能前置条件。
-
-此前错误及修复：首次测试因模块尚未实现而失败；短中文错字检索只比较完整标题导致漏召回，改为标题等宽窗口；浏览器发现确认后演示按钮未恢复，修复busy状态；独立代码复核复现澄清文本可夹带虚假成功声明、空档时间未显示，已以失败回归测试验证再修正；确认后清除旧候选卡片也有回归测试。当前没有未解决的失败用例。
-
-## 自动化覆盖
-
-| 文件 | 验证内容 | 模型 |
+| 检查 | 命令/方式 | 实际结果 |
 |---|---|---|
-| test_calendar.py | 实际CRUD读回、版本、重启、UTC范围、半开相邻、重叠拒绝、并发原子冲突、标题/地点/备注/错字检索、SQL注入字符串、无效日期/时长、DST gap/fold、空档 | 不涉及LLM |
-| test_provider.py | endpoint规范化、配置优先级、SecretStr、请求体/Authorization、401/400/429/500等分类、格式与超时、缺配置 | HTTP mock，无真实LLM |
-| test_agent.py | 模型→工具→观察→模型、多轮跨重启补全、检索后修改、歧义拒绝及明确选择、未观测ID保护、冲突反馈后找空档、自由文本假成功丢弃、坏参数/未知工具/循环/超时 | 脚本替身 |
-| test_web.py | 真实前端入口/HTTP提案确认、重复request回放、重启确认、跨会话/Origin/Host、过期、输入schema、并发确认一次、新消息失效、无配置真实错误 | 脚本替身；缺配置用真实provider配置检查（无网络） |
-| test_demo.py | 完整HTTP中文演示脚本：澄清→创建→查询→修改→冲突→同名消歧→唯一删除；普通输入明确是固定脚本 | ReplayModel，不具备语言理解 |
-| test_regressions.py | stale提案不覆盖新值、移时间保留时长、终止后同批工具不执行、无效日期、幂等中断、未知字段、澄清注入拦截、空档实际时间与空结果、确认清理旧候选 | 脚本/HTTP替身 |
-| test_live.py | 真实中文相对日期与多轮、模糊目标检索后修改 | **未运行，默认跳过** |
+| 默认完整离线套件 | `RUN_LIVE_LLM=0 .venv/bin/python -m pytest -q` | **72通过、2跳过、0失败** |
+| 干净venv完整门禁 | `PATH="/tmp/schedule-clean-venv/bin:$PATH" sh scripts/check.sh` | **72通过、2跳过，覆盖率94%**；Ruff lint/format、JS语法通过 |
+| 两项原有真实模型测试 | DeepSeek环境覆盖，RUN_LIVE_LLM=1，传输层共用本轮预算后执行test_live.py | **2通过**，实际5次请求，未修改断言 |
+| 独立审查 | 独立阅读候选状态/保存点/模型标识/评估脚本及重跑离线套件 | 无重要发现；72通过2跳过 |
+| 真实网页 | 8002使用DeepSeek；隔离数据库；浏览器提交/确认/重启 | 创建与确认读回通过，重启保留会话/事件；控制台warn/error为空 |
 
-## 验收场景检查
+默认两项skip是主动防止日常测试产生API费用：test_live_chinese_multiturn_and_create、test_live_fuzzy_reference_uses_tools_and_proposes_correct_change。它们是重要验收，本轮已经单独真实运行通过；不是“跳过所以默认算通过”。
 
-| 场景 | 证据与结论 |
+干净环境仍有一条Starlette 1.8.0弃用提示，建议未来TestClient迁移httpx2；当前HTTPX0.28.1测试全部通过，未屏蔽warning，未为此引入新依赖。
+
+## 测试层次与覆盖
+
+| 层次/文件 | 证据 |
 |---|---|
-| 清晰自然语言创建 | 完整HTTP脚本完成真实写入；自然语言解释由fixture预设，真实模型效果待测 |
-| 日期/范围查询 | Calendar范围和Agent查询测试；浏览器显示实际保存数据 |
-| 不完整请求及后续补全 | Agent持久化历史测试、浏览器定向追问和补充 |
-| 模糊匹配后更新 | 工具返回候选与version后提案、确认读回 |
-| 歧义目标 | 无法直接propose，必须选择或缩小查询；浏览器复现同名两条 |
-| 唯一删除 | test_demo删除一个ID并验证另一条仍在；浏览器同流程 |
-| 冲突及建议 | 真实拒绝重叠、回送冲突给模型、空档时间显示；浏览器复现 |
-| 重启持久化 | 新Store、新FastAPI实例继续相同cookie/提案，事件不丢失 |
-| 错误输入/未知工具 | schema拒绝，多步循环可修复，迭代上限可停止 |
-| 模型超时/格式/工具失败 | HTTP/Agent故障替身验证安全错误，不宣告成功 |
-| 模型错误声称成功 | 普通content丢弃；ask_user只接收枚举字段，虚假question参数拒绝 |
-| 循环与批工具 | 最大步数、终止后同批跳过，测试有断言 |
-| 秘钥 | SecretStr、错误不暴露body、Git忽略检查、全库秘钥模式检查 |
-| 时区/重复/并发 | DST、UTC、请求幂等、重复确认、stale保护、原子冲突 |
+| test_calendar.py | 实际CRUD、UTC/时区、半开相邻、并发冲突、SQLite重启、模糊查询、日期验证、DST gap/fold、SQL参数化 |
+| test_agent.py / test_regressions.py | 脚本模型多步observation、补全、目标观测、歧义、超时/格式、循环、虚假成功拦截、旧提案、移时间保留时长、空档实际显示 |
+| test_web.py / test_demo.py | 真实FastAPI/SQLite的确认、重复请求/确认、跨会话/Origin/Host、重启、完整离线CRUD/消歧/冲突流程 |
+| test_sprint.py | 本轮问题：选择后重查、选择不泄漏、新候选使提案失效、截断列表明确选择、核验失败新增/修改/删除回滚；跨午夜/多冲突/前文修正及安全模型ID |
+| test_provider.py | HTTP MockTransport检查真实请求体、配置优先级、SecretStr、401/400/429/500、超时和格式错误；不调用网络 |
+| test_live_support.py | 评估计数跨驱动实例持久化、预算前置记账、403阻断继续请求、凭据和私有reasoning不进入日志 |
+| test_live.py | 原有两个中文真实模型用例；默认skip，本轮单独DeepSeek运行2通过 |
 
-## 浏览器和真实进程验证
+默认测试仅替换模型边界，Calendar/SQLite/工具/API都是真实代码。新增失败回归先运行观察失败，再修复并重跑相关及完整套件。没有增加规则自然语言解析器，没有把mock成功当成真实模型决策证据。
 
-通过本机浏览器访问实际监听127.0.0.1:8001的离线服务，手动驱动网页按钮：追问、补充、待确认创建、确认后查询、修改地点前后对照、冲突和具体替代时段、第二条同名日程、选择并确认删除。页面日程计数从0→1→2→1，仅预期记录受影响。手机宽度布局、输入、确认按钮、刷新后的持久化恢复均检查。
+## 本轮真实DeepSeek评估
 
-审查修复后重启独立新演示数据库，复验结构化澄清、创建与按钮恢复；完整修复后的HTTP场景由test_demo再次覆盖。截图见 [local-calendar.png](screenshots/local-calendar.png)。浏览器检查不等同自动化跨浏览器全覆盖；未测试所有桌面分辨率或无障碍读屏器。
+所有请求model为`deepseek/deepseek-v4.1-flash`，endpoint归一化到OpenRouter Chat Completions。环境覆盖保留`.env`的Gemini默认；只用合成数据库，不读取真实个人日程/外部日历。
 
-干净安装：新建无system-site-packages的临时venv，按依赖声明安装成功，运行scripts/check.sh通过。普通模式也独立启动，未配置模型时正常显示就绪和配置提示。wheel打包成功并验证static/index.html、style.css、app.js均存在。初次尝试`--no-build-isolation`因干净环境无setuptools失败，改用项目声明的标准隔离构建后成功，未改变应用代码掩盖问题。
+| 场景 | 观察到的工具路径 | 请求 | 结果 |
+|---|---|---:|---|
+| 历史创建→查询→修改重放 | propose_create；search_events→结束；propose_update | 4 | 通过，无法据此追溯旧记录缺失的原根因 |
+| 同名消歧与删除 | search_events→ask_user；点选后propose_delete | 3 | 通过，仅删除选中记录 |
+| 多轮缺时刻/时长 | search_events→ask_user；补全后propose_create | 3 | 通过，保留日期/主题 |
+| 冲突初测 | search_events→ask_user(alternative) | 2 | **失败**：未查空档却声称无空档，已保留证据 |
+| 冲突修复后一次复测 | search_events→find_slots→ask_user；选16点后propose_create | 4 | 通过，15点原事件保留 |
+| 原有pytest live两项 | 原始断言、实际provider与SQLite | 5 | 2通过 |
+| 真实浏览器创建 | search_events→propose_create，用户按钮确认 | 2 | 通过 |
 
-## 后续真实模型验收
+合计**23次请求，输入48,386 tokens、输出3,188 tokens、总计51,574 tokens**；API报告费用合计**US$0.0096942304**。包含失败场景消耗，未删去失败来美化结果。评估上限24请求、按API费用阈值US$0.05停止、每请求最多2048输出token；未刻意用完剩余1请求。API费用是响应报告值，账单以账户为准。
 
-配置步骤、兼容性和数据边界详见README。准备endpoint、model及API key，重启普通模式，再运行：
+私有合成记录位于Git忽略的`data/sprint-20261017/report.json`，保留工具ID/JSON参数/实际observation/最终状态/usage，排除key和私有思维链。HTTP失败只存状态码、脱敏错误、provider、request ID；无无限重试或自动切换模型。测试驱动按单进程顺序执行，预算账本不是多进程生产计费系统。
+
+## 重要根因与回归
+
+1. **候选选择状态**：search无条件替换state丢掉selected_id；selected_id又可能长期留在session。现在选择只供下一回合消费，同回合重查保留同ID/版本，下一任务不继承。
+2. **候选集合变化**：只验证目标version无法发现后来新增的同名事件。现在存原查询并在提案前重查同一截断窗口；变化则要求重新查找/消歧。
+3. **失败写入提交**：确认外层事务内捕获verification_failed后仍commit。现在日历操作包含保存点，失败回滚写入，持久化失败回执；新增/修改/删除故障注入验证原数据恢复。
+4. **未知与空结果混淆**：未查询空档的状态不等于查询返回空。None/[]分开，缺证据时返回missing_observation给模型继续决定工具，不编造“无空档”。
+
+普通assistant.content的假成功刷新后不出现：原逻辑已通过测试，不为此改写。历史修改旧失败本轮一次重放通过，未取得原参数，保留“旧根因不可追溯”的限制。
+
+## 界面、启动和持久化
+
+浏览器显示后端实际model ID，可核对运行进程配置。截图见[sprint-real-model.png](screenshots/sprint-real-model.png)。主流程确认前数据库为空，确认后1条；使用普通README uvicorn工厂命令重启，事件、聊天回执仍在，模型仍为DeepSeek。没有在浏览器逐项手动重做全部CRUD，其余通过HTTP自动化及真实Agent评估，不混淆验证方式。
+
+手动停止观测入口时曾有预期的KeyboardInterrupt清理栈，未影响业务请求；入口现只静默处理显式KeyboardInterrupt，不吞掉其他异常。普通服务由uvicorn管理关闭。
+
+## 可复现命令与已知限制
 
 ```bash
+source .venv/bin/activate
+sh scripts/check.sh
+
+# 以下会产生模型费用；本轮已执行，不需要为报告重复运行。
+LLM_MODEL=deepseek/deepseek-v4.1-flash \
+LLM_ENDPOINT=https://openrouter.ai/api/v1 \
 RUN_LIVE_LLM=1 python -m pytest -m live -v
 ```
 
-使用合成日程和临时数据库，不访问真实日历。必须再手动检查冲突追问、多候选消歧、纠正前文、模型超时与不支持工具的错误。记录provider/model/日期及实际结果，不能直接沿用本次离线结论。真实模型质量、供应商端到端兼容性和GitHub分享权限当前都未验收。
+`scripts/evaluate_live.py`和`scripts/serve_validation.py`提供本轮合成数据观测路径，保留原账本，不通过删除记录绕过预算。五场demo初始状态及限制见[DEMO.md](../DEMO.md)。
+
+真实模型仍有非确定性，小样本不保证任意输入；“第二个”等口语复杂消歧未做穷举，推荐卡片确认。Gemini403保持为外部阻塞，不再重试。公网/多租户、周期、外部同步不在范围；跨浏览器与读屏器全覆盖未做。没有推送GitHub或操作真实日历。

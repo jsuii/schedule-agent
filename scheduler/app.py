@@ -116,7 +116,12 @@ def create_app(settings=None, model=None, *, demo=False):
 
     @app.get("/api/health")
     async def health():
-        return {"status": "ok", "timezone": settings.timezone, "demo": demo}
+        return {
+            "status": "ok",
+            "timezone": settings.timezone,
+            "demo": demo,
+            "model": settings.model if not demo else None,
+        }
 
     @app.get("/api/state")
     async def state(request: Request):
@@ -137,6 +142,7 @@ def create_app(settings=None, model=None, *, demo=False):
             "candidates": session["state"].get("candidates", []),
             "timezone": settings.timezone,
             "model_configured": bool(settings.model.strip()),
+            "model": settings.model if not demo else None,
             "demo": demo,
         }
 

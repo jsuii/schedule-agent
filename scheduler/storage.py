@@ -126,6 +126,7 @@ class Store:
             if not approve:
                 result = {"status": "cancelled", "message": "已取消这次操作，日程未改变。"}
             else:
+                conn.execute("SAVEPOINT calendar_write")
                 try:
                     payload = json.loads(row["payload"])
                     if row["action"] == "create":
@@ -143,12 +144,22 @@ class Store:
                         "event": event,
                         "message": f"已{verb}并核验日程：{describe(event)}。",
                     }
+                    conn.execute("RELEASE calendar_write")
                 except CalendarError as exc:
+                    # Keep a durable failed receipt, but never commit a mutation whose
+                    # verification failed. Catching inside the outer transaction alone
+                    # would otherwise commit the INSERT/UPDATE/DELETE along with it.
+                    conn.execute("ROLLBACK TO calendar_write")
+                    conn.execute("RELEASE calendar_write")
                     result = {
                         "status": "error",
                         "error": exc.code,
                         "details": exc.details,
-                        "message": "操作未执行：日程已变化或出现冲突，请重新查询。",
+                        "message": (
+                            "状态核验失败，本次操作已回滚，请重新查询。"
+                            if exc.code == "verification_failed"
+                            else "操作未执行：日程已变化或出现冲突，请重新查询。"
+                        ),
                     }
             conn.execute(
                 "UPDATE proposals SET status=?, result=? WHERE id=?",

@@ -54,6 +54,7 @@ async function refresh(initial=false) {
   current=await api('/api/state');$('#timezone').textContent=current.timezone;
   if(current.demo)demoIndex=Math.max(0,...current.history.filter(m=>m.role==='user').map(m=>demoPrompts.indexOf(m.content)+1));
   $('#mode').textContent=current.demo?'离线演示 · 模型替身':current.model_configured?'模型已配置':'模型待配置';
+  $('#model-info').textContent=current.demo?'固定脚本模型替身 · 不调用真实 LLM':current.model_configured?'当前模型：'+current.model:'配置模型后可使用自然语言安排日程';
   const notice=$('#notice');notice.replaceChildren();notice.hidden=current.model_configured&&!current.demo;
   if(current.demo){notice.append(document.createTextNode('固定脚本演示：没有调用真实 LLM。点击下方步骤，可验证真实工具、数据库和确认流程。确认/取消提案后再继续。'));
     const b=el('button',demoIndex<demoPrompts.length?'演示下一步：'+demoPrompts[demoIndex]:'演示步骤已结束');b.id='demo-next';b.disabled=demoIndex>=demoPrompts.length||busy||!!current.proposal;b.onclick=()=>sendText(demoPrompts[demoIndex++]);notice.append(b);

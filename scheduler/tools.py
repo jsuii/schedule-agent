@@ -99,8 +99,15 @@ class Tools:
     def __init__(self, store, sid):
         self.store, self.sid, self.cal = store, sid, store.calendar
         self.state = store.session(sid)["state"]
+        # A card click authorizes selection for one model turn, not every future task.
+        # Keep it in this toolset while consuming it from persistent session state.
+        if self.state.get("selected_id"):
+            self._save_state()
         self.last_conflicts = []
-        self.last_slots = []
+        self.last_slots = None  # None means unqueried, [] means verified empty.
+
+    def _save_state(self):
+        self.store.save_state(self.sid, {k: v for k, v in self.state.items() if k != "selected_id"})
 
     def execute(self, name, arguments):
         if name not in TOOLS:
@@ -132,6 +139,11 @@ class Tools:
 
     def _execute(self, name, value):
         if name == "ask_user":
+            if "alternative" in value.fields and self.last_slots is None:
+                return {
+                    "error": "missing_observation",
+                    "hint": "尚未查询空档，不能声称没有空档。请先调用propose工具校验冲突，或调用find_slots查询，再追问替代时间。",
+                }
             parts = []
             labels = {
                 "title": "日程标题",
@@ -162,8 +174,20 @@ class Tools:
             return {"question": "\n".join(parts)}
         if name == "search_events":
             events = self.cal.search(**value.model_dump(), limit=51)
-            self.state = {"candidates": events[:50], "truncated": len(events) > 50}
-            self.store.save_state(self.sid, self.state)
+            selected = self.state.get("selected_id")
+            previous = next(
+                (e for e in self.state.get("candidates", []) if e["id"] == selected), None
+            )
+            self.state = {
+                "candidates": events[:50],
+                "truncated": len(events) > 50,
+                "search": value.model_dump(),
+            }
+            if previous and any(
+                e["id"] == selected and e["version"] == previous["version"] for e in events[:50]
+            ):
+                self.state["selected_id"] = selected
+            self._save_state()
             return {
                 "events": events[:50],
                 "truncated": len(events) > 50,
@@ -177,6 +201,14 @@ class Tools:
             payload = value.model_dump()
         else:
             candidates = self.state.get("candidates", [])
+            if self.state.get("search") is not None:
+                current = self.cal.search(**self.state["search"], limit=51)
+                if (len(current) > 50) != bool(self.state.get("truncated")) or {
+                    (e["id"], e["version"]) for e in current[:50]
+                } != {(e["id"], e["version"]) for e in candidates}:
+                    raise CalendarError(
+                        "stale_candidates", hint="检索结果已变化，请重新检索并确认目标"
+                    )
             before = next((e for e in candidates if e["id"] == value.event_id), None)
             if before is None:
                 raise CalendarError("not_observed", hint="请先使用 search_events 检索实际目标")

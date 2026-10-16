@@ -1,6 +1,6 @@
 # 技术架构
 
-> 后续状态更新：已在用户授权下完成10次OpenRouter真实请求；追问、多轮创建、查询通过，修改未通过。以下未调用真实模型的描述为此前离线交付记录；当前结果以[真实联调报告](LIVE_TEST_2026-10-17.md)为准。最新离线套件56通过、2个默认跳过。
+> 当前验证：默认72通过、2个live跳过；两项live已另行真实通过。DeepSeek真实补全、修改、消歧删除和冲突替代通过；详细证据、失败及限制见[工作日志](../AUTONOMOUS_WORK_LOG.md)。
 ## 技术选择
 
 Python 3.12、FastAPI、Pydantic、HTTPX、SQLite、原生 HTML/CSS/JS。一个进程即可启动，静态资源随 wheel 包分发。仓库/AgentScope/Dify 的实际源码与适配比较见 [RESEARCH.md](RESEARCH.md)。没有复制第三方项目的实现代码，也没有将原始任务文档中的外部发布要求当作当前推送授权。
@@ -46,7 +46,7 @@ flowchart TD
 |---|---|---|
 | search_events | query?，ISO start?，end? | events（最多50条）、truncated；更新本会话候选/观测版本 |
 | find_slots | start，end，duration_minutes（5–1440），exclude_id? | slots（最多5个）；最多31天范围，15分钟步进 |
-| ask_user | fields 数组：title/date/start/duration/selection/alternative/scope/details | 从缺项与真实工具结果生成 question；结束本轮 |
+| ask_user | fields 数组：title/date/start/duration/selection/alternative/scope/details | 从缺项与真实工具结果生成 question；缺空档证据时返回missing_observation继续模型循环，有证据才结束本轮 |
 | propose_create | title，start，end，location?，notes? | proposal 或 conflict/invalid_*；成功即结束本轮 |
 | propose_update | event_id，patch | 校验已观测目标/多候选/版本；proposal；成功结束 |
 | propose_delete | event_id | 同上，proposal；无删除执行权限 |
@@ -75,7 +75,7 @@ SQLite schema版本1，首次启动自动创建：
 - proposals：随机id、所属session、action、完整目标payload、before快照、id/version、有效期、状态与最终回执。
 - requests：session+request_id唯一，缓存最终响应；中断的未完成请求返回busy，不重复执行。
 
-WAL与10秒数据库锁超时。确认事务使用BEGIN IMMEDIATE，将冲突检查、目标版本、写入、读回、回执与提案状态放进同一事务；并发重复确认只会执行一次。失败未提交时回滚；冲突/旧版本在写入前拒绝。确认完成清除旧候选，后续修改重新检索。普通新消息使旧pending提案失效。
+WAL与10秒数据库锁超时。确认事务使用BEGIN IMMEDIATE，将冲突检查、目标版本、写入、读回、回执与提案状态放进同一事务；日历写入另有SAVEPOINT，核验失败回滚该写入但持久化失败回执；并发重复确认只会执行一次。失败未提交时回滚；冲突/旧版本在写入前拒绝。确认完成清除旧候选，后续修改重新检索。候选保存原查询及版本，提案前重查同一截断窗口；新增/变化要求重新检索。用户卡片选择只在下一工具回合有效，不跨任务泄漏。普通新消息使旧pending提案失效。
 
 每会话asyncio锁避免同一进程中并发改会话；不同会话可并行等待模型。此锁不跨进程，因此只支持单worker。本地日历共用，cookie不是多用户日历访问控制；不得将本应用当公网上的多租户服务。
 
@@ -95,7 +95,7 @@ WAL与10秒数据库锁超时。确认事务使用BEGIN IMMEDIATE，将冲突检
 
 ## 安全与隐私
 
-模型API key只从配置进入Authorization头；SecretStr隐藏repr；HTTP不跟随重定向。remote只允许HTTPS，loopback允许HTTP。前端不接收endpoint/key配置值；模型原始body不写日志。日程内容经textContent渲染，SQL参数化。
+state/health只公开运行模型ID，不公开端点/密钥。模型API key只从配置进入Authorization头；SecretStr隐藏repr；HTTP不跟随重定向。remote只允许HTTPS，loopback允许HTTP。前端不接收endpoint/key配置值；模型原始body不写日志。日程内容经textContent渲染，SQL参数化。
 
 随机HttpOnly、SameSite=Strict cookie；确认绑定session和服务器提案，不能由模型传confirmed=true绕过。POST要求JSON，检查Origin与Sec-Fetch-Site，TrustedHost限制本地Host，CSP/X-Content-Type-Options和no-store防内容执行/缓存。不是OS级隔离或多用户认证。
 
