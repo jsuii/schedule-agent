@@ -52,6 +52,7 @@ class Agent:
         ]
         toolset, trace, observations = Tools(self.store, sid), [], []
         reply = None
+        last_error, repeated_errors = None, 0
         try:
             async with asyncio.timeout(self.settings.turn_timeout_seconds):
                 for _ in range(self.settings.max_iterations):
@@ -124,6 +125,19 @@ class Agent:
                             }
                         elif "question" in result:
                             terminal = {"status": "clarification", "message": result["question"]}
+                        if not terminal:
+                            error_key = (name, result["error"]) if "error" in result else None
+                            repeated_errors = (
+                                repeated_errors + 1
+                                if error_key and error_key == last_error
+                                else (1 if error_key else 0)
+                            )
+                            last_error = error_key
+                            if repeated_errors >= 3:
+                                terminal = {
+                                    "status": "error",
+                                    "message": "同一工具连续3次失败，已停止以避免重复模型调用。日程未改变，请核对请求或工具错误后重试。",
+                                }
                     if terminal:
                         reply = terminal
                         break

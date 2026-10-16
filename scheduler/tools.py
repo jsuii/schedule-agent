@@ -107,11 +107,19 @@ class Tools:
             return {"error": "unknown_tool", "hint": "请使用提供的工具名称"}
         try:
             value = TOOLS[name][0].model_validate(arguments)
-        except (ValidationError, TypeError):
+        except ValidationError as exc:
             return {
                 "error": "invalid_arguments",
                 "hint": "参数不符合工具 schema；请补全信息或修正，不要猜测",
+                "issues": [
+                    {"path": ".".join(str(p) for p in e["loc"])[:200], "type": e["type"]}
+                    for e in exc.errors(
+                        include_input=False, include_context=False, include_url=False
+                    )[:8]
+                ],
             }
+        except TypeError:
+            return {"error": "invalid_arguments", "hint": "工具参数必须是 JSON object"}
         try:
             return self._execute(name, value)
         except CalendarError as exc:

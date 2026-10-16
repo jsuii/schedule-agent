@@ -158,3 +158,27 @@ def test_confirm_clears_stale_candidate_cards(store):
     result = asyncio.run(Agent(store, model, Settings()).run(sid, "取消"))
     store.confirm(sid, result["proposal"]["id"], True)
     assert store.session(sid)["state"] == {}
+
+
+def test_invalid_tool_feedback_identifies_fields_without_echoing_values(store):
+    from scheduler.tools import Tools
+
+    result = Tools(store, store.new_session()).execute(
+        "propose_update",
+        {"event_id": "synthetic-id", "patch": {"unknown_secret_field": "sensitive-fixture-value"}},
+    )
+    assert result["error"] == "invalid_arguments"
+    assert result["issues"] == [{"path": "patch.unknown_secret_field", "type": "extra_forbidden"}]
+    assert "sensitive-fixture-value" not in json.dumps(result)
+
+
+def test_repeated_same_tool_error_stops_before_exhausting_model_budget(store):
+    sid = store.new_session()
+    bad = call("propose_update", event_id="not-observed", patch={"location": "测试室B"})
+    model = ScriptedModel(bad, bad, bad, bad, bad)
+    result = asyncio.run(Agent(store, model, Settings(max_iterations=8)).run(sid, "改地点"))
+    assert result["status"] == "error"
+    assert len(model.messages) == 3
+    assert len(result["trace"]) == 3
+    assert "连续" in result["message"]
+    assert store.calendar.search() == []
