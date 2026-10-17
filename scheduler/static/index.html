@@ -9,6 +9,9 @@
 <div class="intro"><div class="eyebrow">YOUR TIME, WELL SPENT</div><h1>把安排说出来，<br>把时间留给生活。</h1><p>查询、调整，或为下一件重要的事找个空档。</p><p id="model-info" class="model-info" aria-live="polite"></p></div>
 <div id="notice" class="notice" hidden></div>
 <div id="messages" class="messages" role="log" aria-live="polite"></div>
+<div id="tasks" hidden></div>
+<div id="slots" hidden></div>
+<div id="clarification" aria-live="polite" hidden></div>
 <div id="conflict" hidden></div>
 <div id="undo" hidden></div>
 <div id="proposal" hidden></div>
@@ -17,7 +20,7 @@
 <div class="composer-wrap">
 <div id="suggestions" class="suggestions"><button data-prompt="我明天有什么安排？">查看明天的安排 ↗</button><button data-prompt="明天下午3点和老王开会一小时，地点会议室A">安排一个会议 ↗</button></div>
 <form id="chat-form"><label class="sr-only" for="input">描述日程需求</label><textarea id="input" rows="2" maxlength="4000" placeholder="例如：把和老王的会挪到后天下午2点…" required></textarea><button id="send" type="submit" aria-label="发送消息">↑</button></form>
-<div class="composer-note"><span id="processing">Enter 发送 · Shift + Enter 换行</span><span>写入前由你确认</span></div>
+<div class="composer-note"><span id="processing">Enter 发送 · Shift + Enter 换行</span><button id="stop-waiting" type="button" class="quiet" hidden>停止等待</button><span>写入前由你确认</span></div>
 </div>
 </section>
 <aside class="agenda" aria-label="日程列表"><div class="agenda-top"><div><div class="eyebrow">YOUR CALENDAR</div><h2>日程一览<span id="count">0</span></h2></div><button id="refresh" class="quiet" aria-label="刷新日程">↻</button></div><div class="timezone" id="timezone">Asia/Shanghai</div><label class="date-filter" for="date">查看日期<input type="date" id="date"></label><div class="agenda-label"><span id="date-label">所有安排</span><button id="all-dates" class="quiet small">全部日期</button></div><div id="events"></div><details id="trash-panel"><summary>回收站 · 保留7天</summary><div id="trash-events"></div></details><div class="aside-foot"><span class="dot"></span>本地日历 · 确认后保存</div></aside>

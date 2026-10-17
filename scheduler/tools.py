@@ -98,7 +98,8 @@ class DraftIntent(Arguments):
     action: Literal["create", "update"] | None = None
     event_id: str | None = None
     version: int | None = Field(default=None, ge=1)
-    event: Patch | None = None
+    event: Patch
+    duration_minutes: int | None = Field(default=None, ge=1, le=10080)
 
 
 class Relation(Arguments):
@@ -110,9 +111,35 @@ class Relation(Arguments):
     attention_verified: bool | None = None
 
 
+class TimeWindow(Arguments):
+    window_id: str = Field(min_length=1, max_length=64)
+    intent_ids: list[str] = Field(min_length=2, max_length=8)
+    start: str
+    end: str
+
+
 class TaskDraft(Arguments):
     intents: list[DraftIntent] = Field(default_factory=list, max_length=8)
     relations: list[Relation] = Field(default_factory=list, max_length=16)
+    time_windows: list[TimeWindow] = Field(default_factory=list, max_length=8)
+
+
+class Context(Arguments):
+    action: Literal["new", "continue", "resume", "cancel", "clarify"]
+    task_id: str | None = Field(default=None, min_length=1, max_length=64)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    entity: Literal["event", "reminder"] = "event"
+    reminder_at: str | None = None
+    notes: str = Field(default="", max_length=2000)
+
+
+class Flexible(Arguments):
+    title: str = Field(min_length=1, max_length=200)
+    date: str
+    duration_minutes: int = Field(ge=5, le=1440)
+    not_before: str | None = None
+    location: str = Field(default="", max_length=500)
+    notes: str = Field(default="", max_length=2000)
 
 
 class CancelScope(Arguments):
@@ -168,6 +195,14 @@ class Delete(Arguments):
 
 
 TOOLS = {
+    "task_context": (
+        Context,
+        "区分任务边界：新独立请求用new并给title，先前任务自动挂起保留；补充当前任务用continue+真实task_id，恢复其他任务用resume+真实task_id，取消仅指定任务用cancel，真正不清楚是否换任务用clarify。不能把新请求并入旧草稿。提醒类用new entity=reminder，reminder_at和notes保留原意；系统不支持定时通知或发邮件。",
+    ),
+    "schedule_flexible": (
+        Flexible,
+        "用户授权寻找合适时间时使用。date为实际YYYY-MM-DD日期，下午固定12:00–18:00，duration_minutes为明确时长；not_before可传明确下界ISO。返回真实空档候选供网页选择，不自动选择或写入；不得用旧任务字段填新安排。",
+    ),
     "propose_cancel_range": (
         CancelRange,
         "用户明确取消全部/某日期范围时使用，一次检索完整实际集合并只准备待确认清单，不要求逐条选择。scope.kind=today/tomorrow/week(周一至下周一)/afternoon(今天12点至18点)/date(YYYY-MM-DD)/interval(ISO start/end半开区间)。模型不构造删除清单。排除用唯一标题子串exclude_queries或清单真实exclude_ids；歧义问具体项。用户明确继续当前清单时continue_previous=true且不传scope，保留已排除项；新任务必须scope重新开始。",
@@ -182,7 +217,7 @@ TOOLS = {
     ),
     "stage_task": (
         TaskDraft,
-        "一句话包含多个事件或需要多轮补全时，先用此工具保存所有独立意图（包括不完整事件）。intents用稳定intent_id，event仅含该事件已知字段；未提地点留空，不继承其他事件地点。后续只传同intent_id的补充字段，不省略已知事件重新开始。关系first/second用intent_id；kind interrupt表示first可暂停容纳second，parallel表示并行，sequential表示first须先完成。仅用户明确允许时confirmed=true；往返包含在所填时间且注意力已核实时分别travel_included/attention_verified=true，否则不要猜测。只更新关系可传intents=[]。程序自动给窄澄清/冲突方案或统一提案，本轮结束。",
+        "一句话包含多个事件或需要多轮补全时，先用此工具保存所有独立意图（包括不完整事件）。intents用稳定intent_id，event必填且仅含该事件已知字段（如title/start/end）；不能只传ID。明确给定时长可用intent.duration_minutes，程序从start计算end。多个事件共享时间范围但分配未定时，用time_windows=[{window_id,intent_ids,start,end}]保留范围，不给每项复制完整区间、不均分时长；范围不是并行许可。未提地点留空，不继承其他事件地点。后续只传同intent_id的补充字段，不省略已知事件重新开始。关系first/second用intent_id；kind interrupt表示first可暂停容纳second，parallel表示并行，sequential表示first须先完成。仅用户明确允许时confirmed=true；往返包含在所填时间且注意力已核实时分别travel_included/attention_verified=true，否则不要猜测。只更新关系可传intents=[]。程序自动给窄澄清/冲突方案或统一提案，本轮结束。",
     ),
     "propose_resolution": (
         Resolution,
@@ -250,8 +285,10 @@ SCHEMAS = [
 
 
 class Tools:
-    def __init__(self, store, sid, now=None):
+    def __init__(self, store, sid, now=None, require_context=False, paused_proposal_id=None):
         self.now = now
+        self.context_bound = not require_context
+        self.paused_proposal_id = paused_proposal_id
         self.store, self.sid, self.cal = store, sid, store.calendar
         self.state = store.session(sid)["state"]
         # A card click authorizes selection for one model turn, not every future task.
@@ -288,6 +325,8 @@ class Tools:
                 "hint": (
                     'scope 必须为 JSON object，例如 {"scope":{"kind":"today"}}，不能编码成字符串；继续清单用 {"continue_previous":true} 并省略 scope'
                     if name == "propose_cancel_range"
+                    else "stage_task 每条intent必须提供event对象保存用户已给的title/start/end等字段，不能只传intent_id。共用但未分配的范围放time_windows（window_id,intent_ids,start,end），明确时长放duration_minutes；重新从原始消息提取，勿向用户重复索取已给信息。"
+                    if name == "stage_task"
                     else "参数不符合工具 schema；propose_update 使用 {event_id, patch:{变更字段}}；propose_resolution 的 update 还需要整数 version。不要猜测 ID 或缺失信息"
                 ),
                 "issues": [
@@ -300,6 +339,11 @@ class Tools:
         except TypeError:
             return {"error": "invalid_arguments", "hint": "工具参数必须是 JSON object"}
         try:
+            if not self.context_bound and name not in ("task_context", "ask_user"):
+                raise CalendarError(
+                    "context_required",
+                    hint="先用task_context决定continue当前实际task_id、new独立任务、resume其他任务或clarify歧义；不能把新请求塞进旧草稿",
+                )
             return self._execute(name, value)
         except CalendarError as exc:
             if exc.code == "conflict":
@@ -310,6 +354,28 @@ class Tools:
             return {"error": "invalid_arguments", "hint": "日期、时长或字段无效，请向用户核实"}
 
     def _execute(self, name, value):
+        if name == "task_context":
+            from scheduler.flow import control
+
+            return control(self, value)
+        if name == "schedule_flexible":
+            from scheduler.flow import flexible
+
+            return flexible(self, value)
+        if self.state.get("slot_review") and (name.startswith("propose_") or name == "stage_task"):
+            raise CalendarError(
+                "slot_selection_required",
+                hint="该任务正在等待用户选择空档；不能由模型自行选第一个时段提案。请让用户点击候选，或先明确新建其他任务",
+            )
+        if self.state.get("reminder") and name in (
+            "stage_task",
+            "propose_create",
+            "propose_resolution",
+        ):
+            raise CalendarError(
+                "unsupported_entity",
+                hint="当前是未支持的提醒任务，不要补造事件时长；改成日历事件需新建明确event任务",
+            )
         if name == "propose_cancel_range":
             from scheduler.trash import propose_cancel
 
@@ -373,7 +439,7 @@ class Tools:
         if self.state.get("task") and name.startswith("propose_"):
             raise CalendarError(
                 "pending_task",
-                hint="当前有多事件草稿，请用stage_task同一intent_id补充/调整，统一提案以免漏掉其他事件",
+                hint="当前任务有草稿；同一任务用stage_task补充，独立请求先task_context new挂起旧任务，不要合并无关事件",
             )
         if name == "propose_resolution":
             from scheduler.conflicts import validate_case, validate_resolution
@@ -477,7 +543,7 @@ class Tools:
                 (e for e in self.state.get("candidates", []) if e["id"] == selected), None
             )
             self.state = {
-                **{k: self.state[k] for k in ("conflict", "task") if k in self.state},
+                **{k: v for k, v in self.state.items() if k != "selected_id"},
                 "candidates": events[:50],
                 "truncated": len(events) > 50,
                 "search": value.model_dump(),

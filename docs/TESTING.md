@@ -1,16 +1,52 @@
-# 当前验证：批量取消与回收站
+# 当前验证：任务隔离、提醒与灵活安排
+
+## 提交前验收摘要（2026-10-17）
+
+- Offline: **183 passed, 2 live tests skipped; coverage 92%**; Ruff lint/format and JavaScript syntax checks passed.
+- Live model smoke tests: **9 successful HTTP 200 responses; 55,532 reported tokens; API-reported cost US$0.0044401388**. Ten attempts include one connection failure without an HTTP response.
+- Verified: basic inference, native tool calling, shared-time clarification, task switching and restoration of suspended task context.
+- Not verified in this run: final proposal after time-allocation clarification, confirmation and persistent calendar write, browser end-to-end live-model workflow. The two existing live pytest tests were not rerun.
+- Isolation: synthetic database only; no real calendar writes; credentials and raw evaluation artifacts excluded from Git. Model: `deepseek/deepseek-v4.1-flash` via OpenRouter. Further API calls stopped at the authorized budget.
+
+审计详情见[本次真实复验](PRE_SUBMIT_LIVE_2026-10-17.md)；下文各阶段的旧结果保留为历史证据。
+
+提交前复核再次运行完整门禁：183通过、2跳过，覆盖率92%，没有真实模型调用。打包和安全审查见[提交前报告](PRE_SUBMIT_REVIEW_2026-10-17.md)。下文真实模型用量均为此前阶段证据。随后经用户另行授权的[提交前真实复验](PRE_SUBMIT_LIVE_2026-10-17.md)另记：10次尝试含1次连接失败、9次HTTP200，55,532 tokens、US$0.0044401388；基础推理、工具闭环、多事件保留及任务切换恢复通过，最后提案环节因预算未执行。两个旧live pytest仍未执行。
+
+**183通过、2跳过、0失败，覆盖率92%**；Ruff/format及JS语法通过。新增21项合成/脚本模型/HTTP/实际JS测试；完整指定对话、候选选择、事务与旧确认安全回归通过。浏览器另用标注脚本模型验证scope切换与选择→确认；真实DeepSeek五轮8请求全部HTTP200、78611 tokens、US$0.005698224，无写入。两个旧live pytest未执行。详见[报告](CONTEXT_ISOLATION_2026-10-17.md)。
+
+以下为上一轮历史：
+
+# 历史验证：澄清到确认交互
+
+**162通过、2跳过、0失败，覆盖率92%**；静态检查通过。新增3项离线用例覆盖清晰状态、刷新保留、输入入口、已知字段不重问、提案替换及显式确认后写入；浏览器使用标注脚本模型的独立库验收。另真实DeepSeek两轮2请求/18870 tokens/US$0.00214385通过，合成提案确认读回2项。两个旧live pytest未执行。详见[验收报告](CLARIFICATION_UX_2026-10-17.md)。
+
+以下为上一轮历史：
+
+# 历史验证：多事件共享范围回归
+
+**159通过、2跳过、0失败，覆盖率92%**；Ruff/format、JS语法通过。新增13项结构化脚本模型/SQLite测试，不是NL解析器测试。另真实DeepSeek五句抽查共5次HTTP200、37479 tokens、US$0.011012875，无写入。旧两个live pytest仍未执行。原始失败参数、字段映射及边界见[详细报告](SHARED_TIME_REGRESSION_2026-10-17.md)。
+
+以下为上一轮历史：
+
+# 历史验证：恢复冲突修复
+
+**146通过、2跳过、0失败，覆盖率92%**；Ruff/format、JS语法通过。新增5项Python回归和扩展Node请求生命周期测试全部无真实LLM。浏览器实际验证冲突选择→改期提案→确认恢复，活动安排不变。真实模型请求0，两个旧live未执行。详见[修复验收](RESTORE_FIX_2026-10-17.md)。
+
+以下为上一轮历史：
+
+# 历史验证：批量取消与回收站
 
 **141通过、2跳过、0失败，覆盖率92%**；Ruff/format、JS语法通过。新增32项取消/恢复测试使用合成SQLite/HTTP/脚本模型，不用真实LLM。真实DeepSeek另行12请求、89246 tokens、US$0.014142437，含原参数失败3请求；修复后的取消/排除/恢复、周范围与浏览器分别记录。详见[本轮验收](TRASH_TEST_2026-10-17.md)。
 
 以下109等为上一轮历史：
 
-# 当前验证：UX与多事件轮
+# 历史验证：UX与多事件轮
 
 **109通过、2跳过、0失败，覆盖率94%**；静态检查通过。新增13项任务/关系/精简renderer测试不调用真实LLM。真实DeepSeek另行11请求、105074 tokens、US$0.021373094，四场景及浏览器均通过。详见[本轮验收](UX_TEST_2026-10-17.md)。
 
 以下96通过等数字为上一冲突轮历史记录：
 
-# 当前验证：智能冲突轮
+# 历史验证：智能冲突轮
 
 完整门禁 **96通过、2跳过、0失败，覆盖率94%**；24项新增冲突测试没有调用真实LLM。真实DeepSeek25请求、138296 tokens、US$0.0218568444，含失败轨迹；这两项默认跳过的旧live本轮没有重跑。详情、A–H映射、浏览器范围、用量账本审计限制见[冲突验收](CONFLICT_TEST_2026-10-17.md)。
 
@@ -24,7 +60,7 @@ PATH="$PWD/.venv/bin:$PATH" RUN_LIVE_LLM=0 sh scripts/check.sh
 
 最近验证：2026-10-17，Asia/Shanghai。环境macOS arm64、Python3.12.15、Node26.12.0。当前应用代码、mock测试与真实模型证据分开记录，历史失败报告保留。
 
-## 本轮实际结果
+## 历史可靠性阶段实际结果
 
 | 检查 | 命令/方式 | 实际结果 |
 |---|---|---|
@@ -52,7 +88,7 @@ PATH="$PWD/.venv/bin:$PATH" RUN_LIVE_LLM=0 sh scripts/check.sh
 
 默认测试仅替换模型边界，Calendar/SQLite/工具/API都是真实代码。新增失败回归先运行观察失败，再修复并重跑相关及完整套件。没有增加规则自然语言解析器，没有把mock成功当成真实模型决策证据。
 
-## 本轮真实DeepSeek评估
+## 历史可靠性阶段真实DeepSeek评估
 
 所有请求model为`deepseek/deepseek-v4.1-flash`，endpoint归一化到OpenRouter Chat Completions。环境覆盖保留`.env`的Gemini默认；只用合成数据库，不读取真实个人日程/外部日历。
 

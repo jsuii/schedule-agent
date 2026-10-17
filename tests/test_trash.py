@@ -578,3 +578,127 @@ def test_D_immediate_undo_with_conflict_returns_review_without_partial_restore(c
         client.post("/api/proposals/" + subset["id"], json={"approve": True}).json()["count"] == 2
     )
     assert s.calendar.trash()[0]["id"] == events[0]["id"]
+
+
+def test_restore_resolution_alternative_is_pending_and_revalidated(ctx):
+    from scheduler.trash import choose_restore
+
+    s, sid = ctx
+    ball = s.calendar.create(ev("合成羽毛球", "15:00", "16:00"))
+    s.calendar.delete(ball["id"], ball["version"])
+    vet = s.calendar.create(ev("带狗去宠物医院做检查", "13:00", "16:00"))
+    p = restore(ctx, [ball])
+    f = p["event"]["conflicts"][0]
+    assert f["existing"]["id"] == vet["id"]
+    assert f["overlap"] == {"start": ev("x", "15:00")["start"], "end": ev("x", end="16:00")["end"]}
+    assert p["event"]["alternatives"]
+    assert s.confirm(sid, p["id"], True)["error"] == "restore_conflict"
+    p = restore(ctx, [ball])
+    choice = p["event"]["alternatives"][0]
+    q = choose_restore(s, sid, p["id"], choice["id"])
+    assert not q["event"]["conflicts"]
+    assert s.calendar.get(ball["id"]) is None
+    assert s.calendar.trash_get(ball["id"])["start"] == ball["start"]
+    r = s.confirm(sid, q["id"], True)
+    assert r["status"] == "committed"
+    assert s.confirm(sid, q["id"], True) == r
+    assert s.calendar.get(ball["id"])["start"] == choice["selected"][0]["start"]
+    assert s.calendar.get(vet["id"]) == vet
+
+
+def test_restore_alternative_stale_and_cancel(ctx):
+    from scheduler.trash import choose_restore
+
+    s, sid = ctx
+    ball = s.calendar.create(ev("球", "15:00", "16:00"))
+    s.calendar.delete(ball["id"], ball["version"])
+    s.calendar.create(ev("医院", "13:00", "16:00"))
+    p = restore(ctx, [ball])
+    option = p["event"]["alternatives"][0]
+    moved = option["selected"][0]
+    s.calendar.create(ev("新阻挡", moved["start"][11:16], moved["end"][11:16]))
+    with pytest.raises(CalendarError, match="restore_conflict"):
+        choose_restore(s, sid, p["id"], option["id"])
+    assert s.confirm(sid, p["id"], False)["status"] == "cancelled"
+    assert s.calendar.trash_get(ball["id"])
+    with pytest.raises(CalendarError):
+        choose_restore(s, sid, p["id"], option["id"])
+
+
+def test_restore_fixed_no_slots_and_expired_option(ctx):
+    from scheduler.trash import choose_restore
+
+    s, sid = ctx
+    ball = s.calendar.create(ev("固定", "15:00", "16:00") | {"flexibility": "fixed"})
+    s.calendar.delete(ball["id"], ball["version"])
+    s.calendar.create(ev("医院", "13:00", "16:00"))
+    p = restore(ctx, [ball])
+    assert not p["event"]["alternatives"]
+    with pytest.raises(CalendarError):
+        choose_restore(s, s.new_session(), p["id"], "original")
+    with s.calendar.transaction() as conn:
+        conn.execute("UPDATE proposals SET expires=0 WHERE id=?", (p["id"],))
+    with pytest.raises(CalendarError):
+        choose_restore(s, sid, p["id"], "original")
+    assert s.calendar.trash_get(ball["id"])
+
+
+def test_adjusted_restore_conflict_at_confirm_and_readback_rollback(ctx, monkeypatch):
+    from scheduler.trash import choose_restore
+
+    s, sid = ctx
+    ball = s.calendar.create(ev("球", "15:00", "16:00"))
+    s.calendar.delete(ball["id"], ball["version"])
+    s.calendar.create(ev("医院", "13:00", "16:00"))
+    original = s.calendar.trash_get(ball["id"])
+    p = restore(ctx, [ball])
+    q = choose_restore(s, sid, p["id"], p["event"]["alternatives"][0]["id"])
+    moved = q["event"]["selected"][0]
+    blocker = s.calendar.create(ev("新冲突", moved["start"][11:16], moved["end"][11:16]))
+    assert s.confirm(sid, q["id"], True)["error"] == "restore_conflict"
+    assert s.calendar.trash_get(ball["id"]) == original
+    s.calendar.delete(blocker["id"], blocker["version"])
+    p = restore(ctx, [ball])
+    q = choose_restore(s, sid, p["id"], p["event"]["alternatives"][0]["id"])
+    real_get = s.calendar.get
+    monkeypatch.setattr(
+        s.calendar,
+        "get",
+        lambda target, conn=None: None if target == ball["id"] else real_get(target, conn),
+    )
+    assert s.confirm(sid, q["id"], True)["error"] == "verification_failed"
+    assert s.calendar.trash_get(ball["id"]) == original
+
+
+def test_restore_options_http_and_recheck(ctx):
+    from fastapi.testclient import TestClient
+    from scheduler.app import create_app
+    from scheduler.config import Settings
+    from tests.helpers import ScriptedModel
+
+    s, sid = ctx
+    ball = s.calendar.create(ev("合成羽毛球", "15:00", "16:00"))
+    s.calendar.delete(ball["id"], ball["version"])
+    s.calendar.create(ev("医院", "13:00", "16:00"))
+    app = create_app(Settings(database=str(s.calendar.path)), ScriptedModel())
+    client = TestClient(app)
+    client.cookies.set("schedule_session", sid)
+    tombstone = s.calendar.trash_get(ball["id"])
+    ref = {k: tombstone[k] for k in ("id", "version", "deletion_batch_id")}
+    p = client.post("/api/trash/restore", json={"selected": [ref]}).json()["proposal"]
+    url = "/api/trash/restore/" + p["id"] + "/options/"
+    assert TestClient(app).post(url + "original", json={}).status_code == 409
+    assert client.post(url + "invented", json={}).status_code == 409
+    q = client.post(url + "original", json={}).json()["proposal"]
+    assert q["event"]["conflicts"]
+    assert client.post(url + "original", json={}).status_code == 409
+    option = q["event"]["alternatives"][0]
+    result = client.post("/api/trash/restore/" + q["id"] + "/options/" + option["id"], json={})
+    assert result.status_code == 200
+    selected = result.json()["proposal"]
+    assert client.get("/api/state").json()["proposal"]["id"] == selected["id"]
+    assert s.calendar.trash_get(ball["id"]) == tombstone
+    assert (
+        client.post("/api/proposals/" + selected["id"], json={"approve": True}).json()["status"]
+        == "committed"
+    )

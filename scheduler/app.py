@@ -169,11 +169,30 @@ def create_app(settings=None, model=None, *, demo=False):
             for m in turn
             if m["role"] in ("user", "assistant") and m.get("content") and not m.get("tool_calls")
         ]
+        from scheduler.tasks import clarification_view
+
+        pending = store.pending(sid)
+        clarification = (
+            clarification_view(session["state"].get("task"))
+            if not pending and not session["state"].get("conflict")
+            else None
+        )
+        from scheduler.flow import contexts
+
+        review = session["state"].get("slot_review")
+        import time
+
+        if pending or not review or review["expires"] <= time.time():
+            review = None
         return {
+            "contexts": contexts(store, sid),
+            "active_context_id": session["state"].get("context_id"),
+            "slot_review": review,
+            "clarification": clarification,
             "events": store.calendar.search(limit=501)[:500],
             "history": history,
             "events_truncated": len(store.calendar.search(limit=501)) > 500,
-            "proposal": store.pending(sid),
+            "proposal": pending,
             "undo": undo_available(sid),
             "conflict": session["state"].get("conflict"),
             "candidates": session["state"].get("candidates", []),
@@ -195,8 +214,35 @@ def create_app(settings=None, model=None, *, demo=False):
             if cached:
                 return cached
             result = await app.state.agent.run(sid, body.text)
+            result["request_id"] = body.request_id
             store.finish_request(sid, body.request_id, result)
             return result
+
+    @app.post("/api/contexts/{context_id}/{action}")
+    async def context_action(context_id: str, action: str, request: Request):
+        if locks[request.state.sid].locked():
+            raise HTTPException(409, "助手正在处理，请稍候")
+        if action not in ("resume", "cancel"):
+            raise HTTPException(404, "操作不存在")
+        from scheduler.flow import control, phase
+        from scheduler.tools import Tools, Context
+
+        result = control(
+            Tools(store, request.state.sid), Context(action=action, task_id=context_id)
+        )
+        phase(store, request.state.sid, "awaiting_clarification")
+        return {
+            "context": result.get("context"),
+            "message": result.get("question", "已恢复该任务，请核对当前内容后继续。"),
+        }
+
+    @app.post("/api/slots/{review_id}/{option_id}")
+    async def slot_choice(review_id: str, option_id: str, request: Request):
+        if locks[request.state.sid].locked():
+            raise HTTPException(409, "助手正在处理，请稍候")
+        from scheduler.flow import choose_slot
+
+        return {"proposal": choose_slot(store, request.state.sid, review_id, option_id)}
 
     @app.post("/api/proposals/{proposal_id}")
     async def confirm(proposal_id: str, body: Decision, request: Request):
@@ -230,6 +276,14 @@ def create_app(settings=None, model=None, *, demo=False):
                 store, request.state.sid, event_ids=[e["id"] for e in expected], expected=expected
             )
         }
+
+    @app.post("/api/trash/restore/{proposal_id}/options/{option_id}")
+    async def restore_option(proposal_id: str, option_id: str, request: Request):
+        if locks[request.state.sid].locked():
+            raise HTTPException(409, "助手正在处理，请稍候")
+        from scheduler.trash import choose_restore
+
+        return {"proposal": choose_restore(store, request.state.sid, proposal_id, option_id)}
 
     @app.post("/api/trash/batches/{batch_id}")
     async def restore_batch(batch_id: str, request: Request):

@@ -109,7 +109,10 @@ class ReplayModel:
             and "用户通过候选卡片明确选择了 event_id=" in messages[0]["content"]
         ):
             selected = (
-                messages[0]["content"].split("用户通过候选卡片明确选择了 event_id=")[-1].strip()
+                messages[0]["content"]
+                .split("用户通过候选卡片明确选择了 event_id=")[-1]
+                .splitlines()[0]
+                .strip()
             )
             return tool("propose_delete", event_id=selected)
         raise ModelError(

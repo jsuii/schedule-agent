@@ -26,6 +26,11 @@ class Store:
                 CREATE TABLE IF NOT EXISTS requests (
                     session_id TEXT NOT NULL, id TEXT NOT NULL, result TEXT,
                     PRIMARY KEY(session_id,id));
+                CREATE TABLE IF NOT EXISTS task_contexts (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, title TEXT NOT NULL,
+                    entity TEXT NOT NULL, status TEXT NOT NULL, snapshot TEXT NOT NULL,
+                    proposal_id TEXT, created REAL NOT NULL, updated REAL NOT NULL);
+                CREATE INDEX IF NOT EXISTS task_context_session ON task_contexts(session_id,status);
                 PRAGMA user_version=3;
             """)
 
@@ -48,6 +53,11 @@ class Store:
                 "UPDATE sessions SET state=? WHERE id=?",
                 (json.dumps(state, ensure_ascii=False), sid),
             )
+            if state.get("context_id"):
+                conn.execute(
+                    "UPDATE task_contexts SET snapshot=?,updated=? WHERE id=? AND session_id=?",
+                    (json.dumps(state, ensure_ascii=False), time.time(), state["context_id"], sid),
+                )
 
     def append_turn(self, sid, messages):
         with self.calendar.transaction() as conn:
@@ -83,6 +93,9 @@ class Store:
 
                 validate_task(self, payload["task"], payload["changes"], sid=sid)
             payload = {**payload, "preview": self.calendar.prepare_batch(payload["changes"])}
+        from scheduler.flow import phase
+
+        phase(self, sid, "ready_for_proposal")
         self.invalidate(sid)
         proposal_id = uuid4().hex
         expires = time.time() + 15 * 60
@@ -101,6 +114,19 @@ class Store:
                     "pending",
                 ),
             )
+        with self.calendar.connect() as conn:
+            state = self.session(sid)["state"]
+            if state.get("context_id"):
+                conn.execute(
+                    "UPDATE task_contexts SET proposal_id=?,status='awaiting_confirmation',snapshot=?,updated=? WHERE id=? AND session_id=?",
+                    (
+                        proposal_id,
+                        json.dumps(state, ensure_ascii=False),
+                        time.time(),
+                        state["context_id"],
+                        sid,
+                    ),
+                )
         return self.pending(sid)
 
     def pending(self, sid):
@@ -134,6 +160,10 @@ class Store:
                 raise CalendarError(
                     "proposal_expired", hint="提案已过期或被新消息替代，请重新提出请求"
                 )
+            conn.execute(
+                "UPDATE task_contexts SET status='executing',updated=? WHERE proposal_id=? AND session_id=?",
+                (time.time(), proposal_id, sid),
+            )
             if not approve:
                 result = {"status": "cancelled", "message": "已取消这次操作，日程未改变。"}
             else:
@@ -210,6 +240,17 @@ class Store:
             conn.execute(
                 "UPDATE proposals SET status=?, result=? WHERE id=?",
                 (result["status"], json.dumps(result, ensure_ascii=False), proposal_id),
+            )
+            context_status = (
+                "completed"
+                if result["status"] == "committed"
+                else "failed"
+                if result["status"] == "error"
+                else "awaiting_clarification"
+            )
+            conn.execute(
+                "UPDATE task_contexts SET status=?,updated=? WHERE proposal_id=? AND session_id=?",
+                (context_status, time.time(), proposal_id, sid),
             )
             if approve or row["action"] in ("cancel_batch", "restore_batch"):
                 conn.execute("UPDATE sessions SET state=? WHERE id=?", ("{}", sid))

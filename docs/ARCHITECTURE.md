@@ -1,6 +1,6 @@
 # 技术架构
 
-> 当前回收站轮：141通过、2个live默认跳过、覆盖率92%；真实DeepSeek12请求/$0.014142437，含参数失败记录。详情见[本轮验收](TRASH_TEST_2026-10-17.md)。
+> 当前离线门禁：183通过、2个live跳过、覆盖率92%。任务隔离、灵活安排与提醒边界见[验收报告](CONTEXT_ISOLATION_2026-10-17.md)。历史真实模型结果与本次离线复核分别记录。
 ## 技术选择
 
 Python 3.12、FastAPI、Pydantic、HTTPX、SQLite、原生 HTML/CSS/JS。一个进程即可启动，静态资源随 wheel 包分发。仓库/AgentScope/Dify 的实际源码与适配比较见 [RESEARCH.md](RESEARCH.md)。没有复制第三方项目的实现代码，也没有将原始任务文档中的外部发布要求当作当前推送授权。
@@ -31,6 +31,8 @@ flowchart TD
 | provider.py | Model.complete(messages, tools) → assistant message；CompatibleModel仅管理HTTP和协议，不碰数据库 |
 | agent.py | Agent.run(sid,text)：构造当前时间/历史、循环、接收工具结果、停止与错误恢复 |
 | tools.py | SCHEMAS 与 Tools.execute(name,args)：参数校验、候选授权门控、澄清/提案 |
+| flow.py | 独立任务边界、挂起快照与恢复、灵活空档选择及提醒能力边界 |
+| tasks.py / conflicts.py / trash.py | 多事件草稿、约束与冲突方案、批量软删除及恢复 |
 | calendar.py | validate/search/conflicts/slots/create/update/delete；真实事务CRUD及读回 |
 | storage.py | Store：会话、轮次、候选、提案确认、请求幂等 |
 | app.py | 本地HTTP、cookie、Origin/Host、安全响应头、会话并发锁 |
@@ -50,8 +52,15 @@ flowchart TD
 | propose_create | title，start，end，location?，notes? | proposal 或 conflict/invalid_*；成功即结束本轮 |
 | propose_update | event_id，patch | 校验已观测目标/多候选/版本；proposal；成功结束 |
 | propose_delete | event_id | 同上，proposal；无删除执行权限 |
+| propose_resolution | changes | 校验完整变更及约束，返回冲突方案或统一提案 |
+| stage_task | intents、relations?、time_windows? | 增量合并结构化草稿；定向澄清或统一提案 |
+| propose_cancel_range | scope、排除项等 | 完整范围清单及批量取消提案 |
+| search_trash | 查询及删除时间范围等 | 回收站墓碑与版本 |
+| propose_restore | 已观察墓碑引用 | 恢复提案或冲突选择 |
+| task_context | action、任务引用等 | new/continue/resume/cancel/clarify 的任务边界 |
+| schedule_flexible | 标题、日期、时长及窗口等 | 最多4个真实候选，用户选后重验并提案 |
 
-事件结构：`{id,title,start,end,location,notes,version}`；传输时间均为带偏移 ISO。Patch至少一个非null字段，额外字段禁止；移动start但未给end时保留原时长。搜索是半开时间区间相交，不只检查开始日在范围内。
+事件结构：`{id,title,start,end,location,notes,attributes,version}`（回收站额外包含删除/到期及批次信息）；传输时间均为带偏移 ISO。Patch至少一个非null字段，额外字段禁止；移动start但未给end时保留原时长。搜索是半开时间区间相交，不只检查开始日在范围内。
 
 工具错误结构：`{error, hint?, events?, alternatives?}`。代码校验失败、冲突或歧义回送模型，模型可以修正、搜索或追问；不会由固定意图路由强制走同一路径。
 
@@ -68,14 +77,15 @@ flowchart TD
 
 ## 数据持久化与一致性
 
-SQLite schema版本1，首次启动自动创建：
+SQLite当前schema版本3，首次启动自动创建并幂等迁移旧库：
 
 - events：uuid主键、文本字段、UTC整秒起止、递增version，起止索引。
+- task_contexts：按会话隔离的任务类型、状态、草稿快照及原提案引用。
 - sessions：不可预测随机会话id，完整turns JSON，观测候选及selected_id。
 - proposals：随机id、所属session、action、完整目标payload、before快照、id/version、有效期、状态与最终回执。
 - requests：session+request_id唯一，缓存最终响应；中断的未完成请求返回busy，不重复执行。
 
-WAL与10秒数据库锁超时。确认事务使用BEGIN IMMEDIATE，将冲突检查、目标版本、写入、读回、回执与提案状态放进同一事务；日历写入另有SAVEPOINT，核验失败回滚该写入但持久化失败回执；并发重复确认只会执行一次。失败未提交时回滚；冲突/旧版本在写入前拒绝。确认完成清除旧候选，后续修改重新检索。候选保存原查询及版本，提案前重查同一截断窗口；新增/变化要求重新检索。用户卡片选择只在下一工具回合有效，不跨任务泄漏。普通新消息使旧pending提案失效。
+WAL与10秒数据库锁超时。确认事务使用BEGIN IMMEDIATE，将冲突检查、目标版本、写入、读回、回执与提案状态放进同一事务；日历写入另有SAVEPOINT，核验失败回滚该写入但持久化失败回执；并发重复确认只会执行一次。失败未提交时回滚；冲突/旧版本在写入前拒绝。确认完成清除旧候选，后续修改重新检索。候选保存原查询及版本，提案前重查同一截断窗口；新增/变化要求重新检索。用户卡片选择只在下一工具回合有效，不跨任务泄漏。普通新消息处理期间挂起旧pending确认；显式resume可在原期限内恢复，continue及失败修正不会恢复旧确认。
 
 每会话asyncio锁避免同一进程中并发改会话；不同会话可并行等待模型。此锁不跨进程，因此只支持单worker。本地日历共用，cookie不是多用户日历访问控制；不得将本应用当公网上的多租户服务。
 
@@ -111,7 +121,7 @@ System Prompt把日程标题备注视为数据；即使模型被内容诱导，�
 
 `conflicts.py`独立计算逐对UTC半开区间交集，记录完整事件、版本与时区；生成前后移动、顺延全部冲突、明确可缩短时的缩短方案。每个方案经过`prepare_batch`最终集合验证，再按用户明确重要性加权变动代价与修改数排序。未知重要性不从标题推断。方案持久化session.state.conflict，UUID方案ID、15分钟过期、相关版本快照。
 
-事件新增attributes JSON列（幂等迁移、默认{}；读取补默认），schema版本2。importance/flexibility/interruptibility默认unknown，keep_time/overlap_allowed/coexistence_verified默认false，minimum_minutes默认1。fixed/keep_time和原最短时长是硬约束。原单条CRUD/API继续工作。
+事件新增attributes JSON列（幂等迁移、默认{}；读取补默认），当时升级至schema版本2，当前为3。importance/flexibility/interruptibility默认unknown，keep_time/overlap_allowed/coexistence_verified默认false，minimum_minutes默认1。fixed/keep_time和原最短时长是硬约束。原单条CRUD/API继续工作。
 
 第七个工具`propose_resolution(changes)`：create使用event；update使用event_id、version、patch。ID/version必须来自检索或当前冲突快照。原请求绑定校验在分析替换前、提案前及确认事务内执行；修改按真实before+patch校验，不能遗漏或替换原请求硬时间。
 
@@ -125,7 +135,7 @@ System Prompt把日程标题备注视为数据；即使模型被内容诱导，�
 
 完整字段先归一，再编译明确许可的配对关系，双方允许重叠/注意力核实且时间含往返才产生同一服务端coexistence_groups token。兼容函数在原同地点规则外，允许这一对有明确条件的暂停/并行；不复制地点。派生授权仅在提案副本，撤销关系不会残留。终态验证所有事件及顺序关系，继续原保存点、读回与回执。旧单事件冲突转入任务时保存source_context以保留原硬约束。
 
-批量内部冲突同样构造case，少量替代保持所有intent，不遗漏另一事件。选择方案和确认均校验任务修订；无新表或新工作流框架。默认面板只展示精确事实与推荐，其他选项/说明折叠。
+批量内部冲突同样构造case，少量替代保持所有intent，不遗漏另一事件。选择方案和确认均校验任务修订；该阶段未新增表；后续任务隔离增加task_contexts表。默认面板只展示精确事实与推荐，其他选项/说明折叠。
 
 ## 批量取消与回收站（schema v3）
 
@@ -138,3 +148,11 @@ System Prompt把日程标题备注视为数据；即使模型被内容诱导，�
 /api/trash显式读取；/api/trash/restore提交预览版本与批次；/api/trash/batches/{id}准备整批；/api/cancellations/{pid}/selection重审选择。/api/undo/{operation_id}仅由显式用户按钮调用，来源本会话已提交删除，无冲突直接复用确认事务；冲突返回待选提案。成功undo按原操作持久回执幂等回放；LLM仍无确认工具。
 
 cleanup_trash为独立有界显式函数，仅过期墓碑、默认100最多1000，无worker。列表/单次批量最多1000，超过明确报错，取消不截断执行。批量选择/恢复请求限200KB，其他维持32KB，Pydantic仍严格。
+
+## 共享范围草稿契约
+
+stage_task每项必须有非空event，不接受ID空壳；校验错误回送模型修正。time_windows以window_id合并，保存intent_ids与带时区起止，仅作为组范围而非每项分配或并行授权。duration_minutes存于intent，start齐全时计算end；子event与relations分别合并。窗口约束进入草稿、方案及确认validate_task；未分配范围一次询问分配，不均分，不继承其他事件地点。细节见[回归报告](SHARED_TIME_REGRESSION_2026-10-17.md)。
+
+## 独立任务边界与灵活安排
+
+flow.py管理会话绑定task_contexts表及各自snapshot/proposal_id。LLM显式选择new/continue/resume/cancel/clarify，代码清空新scope、挂起并保留旧scope；当前草稿不能无边界吞并新请求。continue不恢复旧确认，resume才可恢复；取消其他任务仅恢复本轮确实有效的临时暂停提案。新任务不继承旧候选/缺失字段，confirm不清除其他挂起任务。前端chat/按钮共同采用请求序号防旧回复覆盖。schedule_flexible在12–18窗口生成最多4候选，绑定scope/期限/选项ID，用户选择与最终确认分别重验。reminder实体仅保留请求并解释无通知能力。详见[验收](CONTEXT_ISOLATION_2026-10-17.md)。

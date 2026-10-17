@@ -1,6 +1,6 @@
 # 需求分析与追踪
 
-> 当前回收站轮：141通过、2个live默认跳过、覆盖率92%；真实DeepSeek12请求/$0.014142437，含参数失败记录。详情见[本轮验收](TRASH_TEST_2026-10-17.md)。
+> 当前离线门禁：183通过、2个live跳过、覆盖率92%。任务隔离、灵活安排与提醒边界见[验收报告](CONTEXT_ISOLATION_2026-10-17.md)。历史真实模型结果与本次离线复核分别记录。
 ## 背景、用户与目标
 
 面试编程题的本地日程助手，用户以中文口语描述计划；演示者和评审需要能解释模型的多步决策、确认操作和真实存储。首要目标是完整可演示的核心流程、可靠工具边界和可复现测试。
@@ -12,12 +12,12 @@
 | ID / 来源 | 要求与通过标准 | 实现 | 自动化证据 | 文档 / 当前状态 |
 |---|---|---|---|---|
 | R01 原题 | 中文网页输入与自然语言输出 | app.py、static/ | test_web、test_demo；浏览器完整演示 | README；本地通过 |
-| R02 原题 | 必须用 LLM 理解自然语言；真正自主工具推理 | provider.py、agent.py、tools.py | test_agent 的多步 observation、test_provider 协议 | DESIGN §2；真实DeepSeek少量多步样例及两项live通过，保留非确定性限制 |
+| R02 原题 | 必须用 LLM 理解自然语言；真正自主工具推理 | provider.py、agent.py、tools.py | test_agent 的多步 observation、test_provider 协议 | DESIGN §2；历史真实DeepSeek少量多步样例及两项live通过；本次离线审查跳过live，保留非确定性限制 |
 | R03 原题 | endpoint/model/api_key 配置示例 | config.py、config.example.json、.env.example | test_provider 配置优先级/兼容错误 | README；离线通过 |
 | R04 原题 | 明确关键推理/匹配/冲突/检索/交互决策 | DESIGN.md | 文档人工核对 | DESIGN 全部对应六类留白点 |
 | R05 原题 | 完整前后端、依赖、启动说明 | pyproject.toml、requirements.lock、static/ | 干净 venv 安装、打包与启动检查 | README；本地通过 |
 | R06 原题 | GitHub共享仓库且对评审开放 | 待外部发布 | 未推送/未开权限 | **未完成，需单独授权与目标仓库** |
-| R07 原题 | 现场演示 | demo.py、网页 | test_demo + 实际浏览器检查 | README 演示步骤；离线可演示，真实模型待联调 |
+| R07 原题 | 现场演示 | demo.py、网页 | test_demo + 实际浏览器检查 | README 演示步骤；离线可演示，少量真实模型已联调，现场验收未完成 |
 | R08 补充 | 新建/日期区间查询/地点备注检索 | calendar.py、tools.py | test_calendar、test_demo | README；本地通过 |
 | R09 补充 | 缺信息追问、跨轮补全、修正前文 | agent.py、SQLite turns | test_multiturn_clarification_persisted_across_restart | PRODUCT_DESIGN；替身协议测试通过 |
 | R10 补充 | 更新/安全删除，影响正确条目 | observed candidates + propose/confirm | test_query_then_update、test_demo 的唯一删除 | DESIGN §4/6；本地通过 |
@@ -67,3 +67,7 @@ A–H见`tests/test_conflicts.py`及冲突验收记录：精确事实/多冲突�
 ## 批量取消与7天恢复增量
 
 A1–F30追踪见TRASH_TEST_2026-10-17.md及tests/test_trash.py：范围/排除/歧义/新鲜度/软删除/恢复冲突/undo/过期清理/并发幂等/故障回滚。新增32项隔离测试，既有109项未降低断言；工具允许集合仅增加3项。清理只在测试库执行，升级前永久删除无法恢复；无需手工SQL迁移。
+
+## 任务隔离与提醒范围（2026-10-17）
+
+新独立请求必须能挂起旧未完成任务，不继承其缺失字段；支持按真实任务ID显式继续/恢复/取消，歧义只问一次。旧确认在新消息处理期间不可执行，修改失败不恢复旧确认。灵活安排返回用户可选空档，选择重验后提案、确认后写入。提醒/通知/发邮件尚未支持，不以猜测时长伪装为事件；保留原请求并准确说明。具体限制与证据见[报告](CONTEXT_ISOLATION_2026-10-17.md)。

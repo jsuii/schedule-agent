@@ -2,7 +2,9 @@
 
 一个本地运行的网页日程助手：LLM 自主选择工具、多步检索与澄清；应用负责校验、冲突判断、安全确认和 SQLite 持久化。
 
-**当前状态：批量取消、7天回收站、恢复及一键撤销已验证。离线141通过、2个live默认跳过，覆盖率92%；本轮真实DeepSeek12请求、89246 tokens、API报告US$0.014142437（含原参数失败3请求）。** “取消今天/本周全部”支持统一清单、勾选保留和单次确认；恢复验证冲突，失败整批回滚。详见[本轮验收](docs/TRASH_TEST_2026-10-17.md)。不改.env Gemini默认，不操作外部日历。
+**当前状态：独立任务可挂起、恢复及取消；灵活安排先选真实空档再确认；提醒准确说明能力限制。离线183通过、2个live默认跳过，覆盖率92%。** 此前真实DeepSeek任务切换检查8请求、78611 tokens、API报告US$0.005698224，无日历写入。详见[任务隔离验收](docs/CONTEXT_ISOLATION_2026-10-17.md)。.env默认及原日历保留。
+
+历史多事件解析修复阶段：拒绝仅含ID的空提取，保留共享时间范围与明确时长，针对实际缺失分配追问；完整离线159通过2跳过、覆盖率92%。五句真实DeepSeek抽查共5请求/37479 tokens/US$0.011012875，未执行日程写入。数据流证据和边界见[多事件回归验收](docs/SHARED_TIME_REGRESSION_2026-10-17.md)。
 
 ## 已实现
 
@@ -11,22 +13,22 @@
 - 真实 SQLite 新建、查询、修改、删除；会话、提案和幂等回执跨重启保存。
 - 标题/地点/备注检索、中文短词模糊召回、日期区间过滤、同名候选消歧。
 - 精确冲突事实、稳定ID的多方案与自定义输入；显式核实的可暂停嵌套；批量调整单次确认、原子回滚。
-- 所有写操作先展示完整提案，由用户按钮确认；确认时再校验冲突和版本，写后读回。
+- 新建、修改和删除先展示完整提案，由用户按钮确认；一键撤销本身是用户明确恢复授权；确认时再校验冲突和版本，写后读回。
 - 模型自由文本不能当作成功回执；澄清由模型选择字段、程序生成中文问题，避免夹带虚假成功声明。
 - 独立 provider/interface，可更换 endpoint/model/key，无需修改 Agent 或业务服务。
 
 ## 环境与安装
 
-需要 **Python 3.12+**。测试另需 Node.js（仅 JavaScript 语法检查，无 npm 依赖）。本机系统 `python3` 是 3.9，不适用；可使用已有 Conda 环境创建隔离环境：
+需要 **Python 3.12+**。测试另需 Node.js（运行实际 JavaScript/DOM 请求生命周期测试及语法检查，无 npm 依赖）。进入克隆后的仓库根目录：
 
 ```bash
-cd /Users/jiayusui/Developer/projects/schedule-agent
-conda run -n llm-dev python -m venv .venv
+cd schedule-agent
+python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]' -c requirements.lock
 ```
 
-其他机器可用 `python3.12 -m venv .venv`，后续相同。`requirements.lock` 固定完整依赖，`pyproject.toml` 声明直接依赖。应用运行不依赖 Conda、AgentScope、Google Calendar 或 Docker。静态网页随 Python 包打包，无前端构建步骤。
+也可用已有 Python 3.12+ Conda 环境创建 venv。`requirements.lock` 固定完整依赖，`pyproject.toml` 声明直接依赖。应用运行不依赖 Conda、AgentScope、Google Calendar 或 Docker。静态网页随 Python 包打包，无前端构建步骤。
 
 ## 无 API key 的本地演示
 
@@ -49,7 +51,7 @@ python -m scheduler.demo --database data/demo-01.sqlite3 --port 8001
 
 ## 普通模式（当前可用模型）
 
-`.env`仍保留Gemini默认，当前直接使用该模型会遇到403。通过进程环境覆盖使用已验证的DeepSeek，不需要修改源码或覆盖密钥：
+新克隆不包含 `.env` 或密钥；先按下节复制模板并配置自己的账户。以下用此前本地账户验证过的 DeepSeek 作为示例，通过进程环境覆盖模型；可访问性取决于账户和服务商：
 
 ```bash
 LLM_MODEL=deepseek/deepseek-v4.1-flash \
@@ -67,11 +69,24 @@ LLM_ENDPOINT=https://openrouter.ai/api/v1 \
 python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 8010
 ```
 
-只使用单个进程。`Ctrl+C` 停止服务，事件和会话保留。数据库首次启动自动初始化，schema 版本为 1。
+只使用单个进程。`Ctrl+C` 停止服务，事件和会话保留。数据库首次启动自动初始化，schema 版本为 3。
+
+## 当前可用网页启动
+
+本地8002此前以进程环境覆盖使用DeepSeek；本地 `.env` 中的Gemini曾返回403，此结果不代表其他账户的权限。密钥从根目录 `.env` 读取。下面是可复现启动命令，默认日历文件首次启动自动创建（本机既有验收进程使用独立数据库，无需清空或替换）：
+
+```sh
+LLM_MODEL=deepseek/deepseek-v4.1-flash \
+LLM_ENDPOINT=https://openrouter.ai/api/v1 \
+APP_DATABASE=data/calendar.sqlite3 \
+  .venv/bin/python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 8002
+```
+
+2026-10-17连接复核：3次合成只读请求全部HTTP200，中性推理、真实工具选择/结果回传/最终回答通过；1287 tokens，API报告US$0.000221844。不代表已经重放用户失败的创建或删除操作。
 
 ## 后续真实模型配置
 
-OpenRouter密钥已保存在本地被忽略的 `.env` 中。环境变量优先级已验证，运行进程的模型ID可在网页及 `/api/health` 确认；它只代表实际加载配置，不代表每次模型请求必然成功。其他环境配置时：
+仓库不包含OpenRouter密钥，请自行写入被忽略的 `.env`。环境变量优先级已验证，运行进程的模型ID可在网页及 `/api/health` 确认；它只代表实际加载配置，不代表每次模型请求必然成功。其他环境配置时：
 
 ```bash
 cp -n .env.example .env
@@ -99,16 +114,18 @@ LLM_ENDPOINT=https://openrouter.ai/api/v1 \
 RUN_LIVE_LLM=1 python -m pytest -m live -v
 ```
 
-本轮这两项检查已通过，覆盖中文相对日期、多轮补全、检索后修改及真实工具协议。未来重新运行仍会产生费用，应在普通网页试跑以上演示场景，并记录具体模型/日期/效果。离线结果不能证明某个真实模型的中文理解质量或 tool-calling 兼容性。
+历史阶段这两项检查曾通过，覆盖中文相对日期、多轮补全、检索后修改及真实工具协议；本次提交前审查未执行它们，也没有调用真实模型。未来重新运行仍会产生费用，应在普通网页试跑以上演示场景，并记录具体模型/日期/效果。离线结果不能证明某个真实模型的中文理解质量或 tool-calling 兼容性。
 
 ## 测试与检查
 
+提交前另行完成[小规模真实模型复验](docs/PRE_SUBMIT_LIVE_2026-10-17.md)：9次HTTP200、55,532 tokens、US$0.0044401388；基础推理/工具闭环/任务切换恢复通过，澄清后提案因10次尝试预算用完未验证。
+
 ```bash
 python -m pytest -q
-sh scripts/check.sh
+PATH="$PWD/.venv/bin:$PATH" RUN_LIVE_LLM=0 sh scripts/check.sh
 ```
 
-当前结果及覆盖范围见 [TESTING.md](docs/TESTING.md)。本轮默认141通过2跳过；另以独立评估器执行真实取消/恢复场景，未重跑这两项旧live。默认所有模型测试使用脚本替身或 HTTP mock，真实模型两项默认跳过；CRUD、SQLite、HTTP 接口和事务不是 mock。
+当前结果及覆盖范围见 [TESTING.md](docs/TESTING.md)，提交安全与打包检查见[提交前审查](docs/PRE_SUBMIT_REVIEW_2026-10-17.md)。当前默认183通过2跳过；多事件修复另有五句真实模型抽查，恢复修复阶段本身没有模型调用。未重跑这两项旧live。默认所有模型测试使用脚本替身或 HTTP mock，真实模型两项默认跳过；CRUD、SQLite、HTTP 接口和事务不是 mock。
 
 ## 架构与文件
 
@@ -119,6 +136,7 @@ scheduler/
   tools.py          参数 schema、候选门控、写入提案、澄清字段
   trash.py          范围清单、7天回收站、恢复/撤销与完整批次验证
   tasks.py          逐事件草稿、关系、窄澄清与统一方案
+  flow.py           独立任务快照、切换恢复、灵活空档与提醒边界
   conflicts.py      冲突事实、候选方案、原请求硬约束与快照校验
   calendar.py       时区、检索、冲突、空档、事务 CRUD 与读回
   storage.py        持久化会话、提案、确认、幂等请求
@@ -135,7 +153,7 @@ scheduler/
 - 端口占用：换端口；浏览器地址也要相应修改。
 - 401/403：检查密钥和模型权限；400：检查 Chat Completions tools 支持；404：检查 endpoint/model；429：稍后重试。不会把 provider 原始响应或密钥返回前端。
 - 超时：单次 HTTP 默认30秒、整轮90秒、最多8次模型调用；同一工具连续3次同类失败会提前停止；不自动重试 HTTP 请求，避免费用与重复操作。工具参数错误返回字段路径和类型供模型修正，不回显字段值。
-- 提案失效：15分钟有效；新消息使旧提案失效。日程版本/冲突改变时确认会拒绝，需要重新查询和提案。
+- 提案失效：15分钟有效；新消息处理期间暂停旧确认；显式恢复任务才可在原期限内重新使用，修改失败不会恢复旧确认。日程版本/冲突改变时确认会拒绝，需要重新查询和提案。
 - 同名事件：先缩小查询或选候选卡片，再确认。选择只在下一模型回合内有效，重查候选变化会要求重新确认。取消某范围全部可一次准备完整清单、勾选保留后统一确认；不是逐条执行。
 - 模糊检索是字符相似度召回，不是 embedding；短词可能多召回。模型可调整关键词，写入仍需明确确认。
 - 单个事件最长7天；空档搜索最多31天、按15分钟步进返回最多5个；没有工作日/节假日规则。查询工具最多50条，截断有标记；侧栏最多500条。

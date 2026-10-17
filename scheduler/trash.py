@@ -3,6 +3,7 @@
 import copy
 import json
 import time
+import uuid
 from datetime import datetime, timedelta
 
 from scheduler.calendar import CalendarError, EventInput, RETENTION_SECONDS
@@ -237,8 +238,14 @@ def validate_restore(store, payload, conn=None):
             raise CalendarError("stale_trash", hint="回收站记录已恢复、移除或发生变化，请刷新")
         if cal.timestamp(event["deleted_at"]) + RETENTION_SECONDS <= time.time():
             raise CalendarError("trash_expired", hint="已超过7天保留期，不能恢复")
-        cal.validate({k: event[k] for k in EventInput.model_fields})
-        current.append(event)
+        adjusted = event | payload.get("adjustments", {}).get(event["id"], {})
+        cal.validate({k: adjusted[k] for k in EventInput.model_fields})
+        cal.check_constraints(event, adjusted)
+        if cal.timestamp(adjusted["end"]) - cal.timestamp(adjusted["start"]) != cal.timestamp(
+            event["end"]
+        ) - cal.timestamp(event["start"]):
+            raise CalendarError("hard_constraint")
+        current.append(adjusted)
     if not current or len({e["id"] for e in current}) != len(current):
         raise CalendarError("invalid_selection")
     facts, _ = restore_facts(store, current, conn)
@@ -288,10 +295,77 @@ def propose_restore(store, sid, *, event_ids=(), operation_id=None, expected=Non
             "selected": events,
             "conflicts": facts,
             "feasible_ids": feasible,
+            "alternatives": restore_alternatives(store, events) if facts else [],
             "source_operation_id": operation_id,
             "is_undo": is_undo,
         },
     )
+
+
+def restore_alternatives(store, events):
+    """Bounded deterministic whole-selection plans; never move active events."""
+    cal = store.calendar
+    # Avoid expensive combinatorial planning for a large batch. Explicit feasible
+    # subsets remain available, and individual rows can be resolved separately.
+    if len(events) > 20:
+        return []
+    plans = []
+    for offset in (0, 60, 120):
+        selected = []
+        for original in events:
+            candidate = dict(original)
+            if restore_facts(store, selected + [candidate])[0]:
+                duration = (cal.timestamp(original["end"]) - cal.timestamp(original["start"])) / 60
+                if (
+                    not 5 <= duration <= 1440
+                    or original.get("keep_time")
+                    or original.get("flexibility") in ("fixed", "shortenable")
+                ):
+                    break
+                begin = cal.timestamp(original["start"]) + offset * 60
+                slots = cal.slots(cal.iso(begin), cal.iso(begin + 2 * 86400), duration)
+                for slot in slots:
+                    proposed = candidate | slot
+                    cal.check_constraints(original, proposed)
+                    if not restore_facts(store, selected + [proposed])[0]:
+                        candidate = proposed
+                        break
+                else:
+                    break
+            selected.append(candidate)
+        if (
+            len(selected) == len(events)
+            and selected != events
+            and not any(p["selected"] == selected for p in plans)
+        ):
+            plans.append({"id": uuid.uuid4().hex, "selected": selected})
+    return plans
+
+
+def choose_restore(store, sid, proposal_id, option_id):
+    proposal = store.pending(sid)
+    if not proposal or proposal["id"] != proposal_id or proposal["action"] != "restore_batch":
+        raise CalendarError("stale_proposal", hint="方案已过期或失效，请从回收站重新选择")
+    payload = copy.deepcopy(proposal["event"])
+    if option_id == "original":
+        # A new review, not permission to bypass a hard conflict.
+        return propose_restore(
+            store,
+            sid,
+            event_ids=[e["id"] for e in payload["selected"]],
+            expected=payload["selected"],
+        )
+    option = next((o for o in payload.get("alternatives", []) if o["id"] == option_id), None)
+    if not option:
+        raise CalendarError("invalid_selection")
+    payload["adjustments"] = {
+        e["id"]: {k: e[k] for k in ("start", "end")} for e in option["selected"]
+    }
+    selected = validate_restore(store, payload)
+    payload.update(
+        selected=selected, conflicts=[], feasible_ids=[e["id"] for e in selected], alternatives=[]
+    )
+    return store.propose(sid, "restore_batch", payload)
 
 
 def execute(store, sid, action, payload, operation_id, conn):
@@ -325,8 +399,14 @@ def execute(store, sid, action, payload, operation_id, conn):
     events = validate_restore(store, payload, conn)
     for event in events:
         conn.execute(
-            "UPDATE events SET deleted_at=NULL,deletion_batch_id=NULL,version=version+1 WHERE id=? AND version=? AND deletion_batch_id=?",
-            (event["id"], event["version"], event["deletion_batch_id"]),
+            "UPDATE events SET start=?,end=?,deleted_at=NULL,deletion_batch_id=NULL,version=version+1 WHERE id=? AND version=? AND deletion_batch_id=?",
+            (
+                cal.timestamp(event["start"]),
+                cal.timestamp(event["end"]),
+                event["id"],
+                event["version"],
+                event["deletion_batch_id"],
+            ),
         )
     for event in events:
         expected = {k: event[k] for k in EventInput.model_fields} | {

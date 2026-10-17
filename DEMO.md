@@ -12,9 +12,9 @@ APP_DATABASE=data/demo-new.sqlite3 \
 python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 8002
 ```
 
-打开[网页](http://127.0.0.1:8002/)，检查“当前模型”确实为DeepSeek。`.env`保留Gemini默认，环境变量只在新进程启动时生效；更换模型必须重启。文件名`demo-new.sqlite3`须为新的演示文件，或明确使用已有数据；不要删除普通开发数据库来重置演示。
+打开[网页](http://127.0.0.1:8002/)，检查“当前模型”确实为DeepSeek。按README配置自己的 `.env` 密钥；环境变量只在新进程启动时生效；更换模型必须重启。文件名`demo-new.sqlite3`须为新的演示文件，或明确使用已有数据；不要删除普通开发数据库来重置演示。
 
-以下每场按“初始状态”独立准备；可为每场选择不同的APP_DATABASE文件，或通过自然语言创建所需合成事件并逐个确认。新对话只重置上下文，不清空日历。任何工具提案都尚未写入，必须核对卡片并确认；下面只涉及合成日程。
+以下“实际验证”来自历史阶段报告，本次提交前审查没有重复调用真实模型。以下每场按“初始状态”独立准备；可为每场选择不同的APP_DATABASE文件，或通过自然语言创建所需合成事件并逐个确认。新对话只重置上下文，不清空日历。任何工具提案都尚未写入，必须核对卡片并确认；下面只涉及合成日程。
 
 无需API的固定脚本展示：`python -m scheduler.demo --database data/offline-new.sqlite3`，端口8001，明显标为模型替身，不作为真实LLM能力证据。
 
@@ -52,7 +52,7 @@ python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 800
 - 预期：查询两条候选，追问选择；两条日程均不变。
 - 点击明天的候选卡，再核对“待确认删除”，确认后仅删除这条，后天那条仍保留。
 - 实际验证：本轮真实ambiguity评估3请求通过；用户选择后再次检索、选择不能泄漏到下一任务、候选集合变化和截断窗口均有离线回归。
-- 限制：点击候选不是确认删除；自然语言“第二个”需模型重新缩小检索，演示建议直接点卡片。所有删除逐条确认，没有批量清空功能。
+- 限制：点击候选不是确认删除；自然语言“第二个”需模型重新缩小检索，演示建议直接点卡片。单项删除需明确目标；明确范围可走批量取消清单，一次确认后软删除。
 
 ## 5. 冲突与替代时间
 
@@ -67,10 +67,10 @@ python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 800
 ## 一键离线验收与有预算的真实评估
 
 ```bash
-sh scripts/check.sh
+PATH="$PWD/.venv/bin:$PATH" RUN_LIVE_LLM=0 sh scripts/check.sh
 ```
 
-默认72通过、2个live测试跳过。两项live用例本轮已经单独实跑并通过，默认跳过是避免日常测试产生费用。
+当前默认183通过、2个live测试跳过，覆盖率92%。两项live用例历史阶段曾单独实跑通过；本次审查未执行，默认跳过避免日常测试产生费用。
 
 本轮评估记录`data/sprint-20261017/report.json`包含23次请求的synthetic工具参数、结果、用量和失败，受Git忽略。`scripts/evaluate_live.py`是针对本轮的有预算驱动，不会自动重跑已记录场景；`scripts/serve_validation.py`是同一create_app的观测封装。普通网页不使用这些测试替身或脚本路由，也不受评估账本的剩余额度限制。
 
@@ -108,10 +108,10 @@ A–H包括故障/过期/回滚可不花API费用复现：`RUN_LIVE_LLM=0 python
 
 ## 当前推荐：一句话多事件与精简冲突面板
 
-本轮网页 http://127.0.0.1:8002/ 保留已确认的两条合成记录。重做请另用空合成数据库（不要清空普通开发库）：
+历史网页验收曾在8002确认两条合成记录，当前日历内容以实际数据库为准。重做请另用空合成数据库（不要清空普通开发库）：
 
 ```bash
-cd /Users/jiayusui/Developer/projects/schedule-agent
+cd schedule-agent
 source .venv/bin/activate
 LLM_MODEL=deepseek/deepseek-v4.1-flash \
 LLM_ENDPOINT=https://openrouter.ai/api/v1 \
@@ -129,10 +129,10 @@ python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 800
 
 ## 当前推荐：批量取消、回收站与一键撤销
 
-8002保留本轮合成验收结果：3项均已恢复。要从干净初始状态重做，使用新的合成文件名：
+历史8002批量验收曾恢复3项，当前日历内容以实际数据库为准。要从干净初始状态重做，使用新的合成文件名：
 
 ```bash
-cd /Users/jiayusui/Developer/projects/schedule-agent
+cd schedule-agent
 source .venv/bin/activate
 python - <<'PY'
 from datetime import datetime
@@ -153,7 +153,7 @@ python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 800
 3. 展开“回收站 · 保留7天”，核对原时间、删除/到期时间。恢复单项先生成提案再确认，活动2。
 4. 点击“撤销最近删除”：只直接恢复原批次仍在回收站的剩余1项，活动3；不会重复恢复刚才已恢复的项或恢复其他批次。
 5. 输入“取消本周所有安排”，新范围应重新包含3项（不继承旧排除）。确认后，从回收站选择“恢复这一删除批次”→核对3项→确认恢复。
-6. 若恢复时被新安排占用，页面显示具体冲突，整批未恢复；可以明确准备可行子集后另行确认，或取消，不会偷偷改时间。
+6. 若恢复时被新安排占用，页面显示具体冲突，整批未恢复；可选择已验证的改期方案或明确子集后另行确认，也可保留回收站；不会偷偷改时间。
 
 “查看回收站”可打开该面板；“恢复昨天删除的合成羽毛球”由模型先检索实际墓碑再提出恢复。“撤销刚才删除”的自然语言仍需确认；页面一键撤销是用户显式授权，不授予LLM执行权限。
 

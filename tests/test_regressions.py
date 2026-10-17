@@ -87,6 +87,8 @@ def test_tool_schema_is_json_and_unknown_fields_are_rejected(store):
     from scheduler.tools import SCHEMAS, Tools
 
     assert {s["function"]["name"] for s in json.loads(json.dumps(SCHEMAS))} == {
+        "task_context",
+        "schedule_flexible",
         "search_events",
         "find_slots",
         "ask_user",

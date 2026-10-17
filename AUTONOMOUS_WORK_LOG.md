@@ -153,3 +153,79 @@ README、DESIGN、架构/产品/需求/测试、DEMO及本日志已更新；详�
 文档README、DESIGN、需求/产品/架构/测试、DEMO与详细TRASH_TEST_2026-10-17.md同步。启动自动幂等迁移v3，无手工SQL。旧版已永久删除不可凭空恢复；软删除7天到期后仍可见但不能恢复，永久清理由显式有界函数处理，不加worker或页面永久删按钮。本轮cleanup只作用临时测试库。
 
 限制：最多366天范围/1000项每批，超限明确拒绝而非截断；大清单宜checkbox避免模型上下文开销；恢复子集保证可行不保证全局最大；撤销绑定会话，回收站为本地日历共享视图。无外部账号/邀请/公网多用户和自动清理。浏览器未注入所有故障与跨平台条件，相关证据来自自动化。无新依赖、无远端推送，用户.vscode保留。
+
+# 恢复冲突与确认界面修复（2026-10-17）
+
+读取用户a39944de需求，Git仅原有未跟踪.vscode，保留。修复前32条回收站测试通过；检查实际renderer与setBusy(false)证实冲突确认因业务data-locked保持禁用，并非已证实busy忘记清除。单项冲突可行子集为空、后端没有改期选项，是界面死路的直接原因。未猜测真实网络故障。
+
+先补失败回归（choose_restore缺失、前端重查/保留按钮缺失），再沿用Calendar.slots/约束验证/Store提案事务，生成有界确定性改期选项。选择绑定会话/最新提案/选项ID/期限，重验墓碑和冲突，只创建待确认提案；确认事务再次校验、更新待恢复行时间、恢复、读回，失败回滚。无冲突恢复/原有undo、Agent及provider不变。冲突阶段隐藏且禁用原危险确认，提供重查原时间、具体改期、保留在回收站；改期后独立展示最终确认。
+
+统一恢复/提案/方案按钮操作生命周期，finally结束忙碌、20秒请求超时（聊天100秒）、Abort停止等待、操作及state/trash序号防晚到覆盖；停止等待不虚报后端事务已取消。Node执行真实JS函数，覆盖validation/HTTP/network/conflict/timeout/cancel、重复提交、旧回执和旧state返回。沿用原硬冲突确认禁用断言并增加隐藏断言。Python新增5项回归覆盖精确事实、备选/选择不写、原时间阻止、取消、固定时间、过期、跨会话/伪造/旧选项、确认新增冲突、调整恢复读回回滚、HTTP闭环。
+
+浏览器使用隔离data/restore-fix-20261017/browser.sqlite3：医院13–16活动、羽毛球15–16回收站；显示15–16冲突和16–17/17–18选项，重查仍阻止，保留正常；再次选16–17仅提案，确认后两活动日程，医院不动、羽毛球16–17、回收站空。控制台warn/error空；截图restore-conflict-options/completed。8002当前运行此合成库，生产数据未动。浏览器未注入故障，故障路径证据来自自动化。
+
+完整门禁146通过2跳过0失败，92%覆盖率，Ruff/format/JS语法通过；独立只读审查无阻塞并独立146通过2跳过。两个旧真实LLM测试未执行。本轮API请求0/tokens0/$0，无必要依赖模型行为。README/TESTING/详细RESTORE_FIX_2026-10-17.md同步；不改.env、模型、mock基础能力，无新框架/依赖、外部日历或远端推送。改期限定向后2天/15分钟步长/至多3方案，整体最多20条、单条5分钟至24小时，不保证穷尽或最优，固定约束不自动解除。
+
+## 后续网页403启动配置纠正
+
+用户报告删除/查询/新增均提示模型权限不足。排查确认上轮启动8002遗漏此前DeepSeek环境覆盖，导致Settings.load重新使用.env默认Gemini；403文案来自provider，不是日程权限。明确承认启动遗漏，不重试Gemini、不改.env、不改Agent或mock。停止旧进程后，以LLM_MODEL=deepseek/deepseek-v4.1-flash、LLM_ENDPOINT=https://openrouter.ai/api/v1、相同APP_DATABASE重启8002，用户现有日历行保留。浏览器刷新实际显示DeepSeek与原两项活动日程。
+
+独立有界最多3请求连接检查，使用已有ProbeTransport，失败即停、无HTTP重试、只读合成库，不使用用户日程：中性1次、search_events模型调用及工具结果回传最终回答2次，共3次HTTP200。返回模型DeepSeek，providers Sail Research/DigitalOcean；1287 tokens、API报告US$0.000221844。证据data/model-reconnect-20261017/report.json（Git忽略，含请求ID、不含密钥）。没有重放用户失败的删除或创建操作。当前网页进程51084，保持本地8002服务。README及恢复验收启动命令补齐模型覆盖，避免再次落回Gemini；本后续测试单独计费，不覆盖前轮恢复功能0次真实调用记录。
+
+# 多事件共享范围解析回归（2026-10-17）
+
+先读实际失败SQLite会话tool_calls/observations/state、tasks/tools/Agent与Git历史。原用户消息存在，模型stage_task实参却仅为grocery和breakfast两个intent_id及version:null，没有event、标题或任何时间；旧可选event契约接收后raw.get(event,{})产生空草稿，逐字段追问。没有独立中文时间解析器，不声称时间先被解析又被映射丢弃。此可选event自042a1c8引入，最近恢复修复未改tasks，未臆断新恢复代码造成丢失。
+
+识别协议无法表达共享未分配范围、也没有明确时长草稿字段。先写新增8用例观察7失败1原本通过，再最小修复：event必填非空，针对stage_task错误反馈模型循环修正；TaskDraft.time_windows保存window_id/intent_ids/start/end，按稳定ID跨轮保留，校验组边界贯穿draft/validate_task方案及最终确认；intent.duration_minutes推导end并保留元数据；已知标题/边界不重复追问，共享范围一次问时间分配，不复制完整区间、不均分、不猜优先级/地点，关系授权仍独立。
+
+追加测试发现改start时派生前校验旧end误报hard_constraint，已先复现失败，移除中途校验，保留派生后对之前草稿的最终硬约束检查；duration改动不能绕fixed。独立审查也定位相同问题，修复后独立157通过2跳过、无其他阻塞。再增加并行真实参数离线回放和不一致时长/无效引用不污染状态，共新增13项，最终完整159通过2跳过0失败、92%覆盖率，Ruff/format/JS语法通过，原断言不弱化。
+
+真实DeepSeek五句合成独立库抽查各1请求，5次全部HTTP200，37479 tokens、API报告US$0.011012875；上限10/$0.025，无HTTP重试、Gemini或代理。2026-10-17T10:13:53+08基准，明天为10月18日。shared保留09–10父范围和两标题，不填子时间；separate保留09/10开始仅问结束；sequential保留09–10及顺序；parallel模型给两项09–10并声明同时，仍被往返/注意力条件阻止，无重叠授权或提案；nested保留家里11–16及快递12–12:15 duration15，地点不继承。所有活动记录0，无确认写入。真实原参数/usage/场景存Git忽略data/shared-time-20261017/report.json；五组结果追加离线结构断言全部通过。并行最后细化文案要求核对每项是否占满区间，只用捕获参数离线回放，未额外真实调用；不夸称模型永不推测时长。
+
+仅新增通用system/schema说明配合结构实现，没有句子识别/硬编码意图路由。旧两个live pytest未执行，不能混算；脚本模型测试明确不等于NL解析。文档README/TESTING/ARCHITECTURE及SHARED_TIME_REGRESSION_2026-10-17.md更新，记录原始证据、字段映射、13新增测试、真实用量与剩余边界。8002重启保留DeepSeek环境覆盖和原数据库，不自动重放创建，.env/密钥未改，用户.vscode保留。
+
+边界：LLM仍可能漏提非空字段或误解共享语义；结构约束不能证明每字段均来自用户。显式同时的整段草稿仍需时间和并行条件核对及最终人工确认。最多8事件/8窗口，任务15分钟，尚无专门删除窗口操作，跨时区/多重窗口语言未穷举。既有失败空草稿不凭ID补造标题，过期需新对话。
+
+# 澄清交互落地（2026-10-17）
+
+用户明确要求把改进落地，不再停于解释。先补失败回归（原回复缺“尚未添加”、缺澄清renderer），再实现共享范围清晰问句、持久化任务派生clarification_view、/api/state.clarification与澄清卡输入。明确各需多久、先做哪项，说明补充后才统一确认；已有时长/顺序不再问，过期不显示。卡内提交走原sendText/Agent，未预填默认分配，生成提案或冲突时隐藏，忙碌时禁用，刷新仍可继续。不新增写接口或改确认/回滚逻辑。
+
+新增3项Python/实际Node renderer回归，完整162通过2跳过0失败、92%覆盖率，Ruff/format/JS语法通过。独立只读审查也完整162通过2跳过、无阻塞。旧live pytest未执行。浏览器另用localhost:8003独立cookie/合成库/标注脚本模型，实际原句→澄清卡→刷新→卡内40/20+顺序→统一确认（0记录）→显式确认2记录，截图clarification-next-step/to-confirmation；临时页/服务已关闭。主8002保留DeepSeek进程覆盖及原数据库、刷新加载新版，用户记录保留。
+
+为验证真实补充衔接，另正常Agent/Tools/合成库运行DeepSeek2轮：初句明确尚未添加，无提案无记录；补充先买菜40分钟再吃早餐20分钟，提案准确09–09:40/09:40–10，确认前0，驱动仅在独立库确认后读回2。真实2请求HTTP200、18870 tokens、API报告US$0.00214385，上限4/$0.015，无HTTP重试、Gemini或代理。证据data/clarification-ux-20261017/live-report.json，.env/密钥不变、不写主日历。脚本浏览器与真实模型验证分别标注，不混为一谈。
+
+README/TESTING与CLARIFICATION_UX_2026-10-17.md同步。边界：补充可能仍有实质缺失或冲突，不能保证任何回答都立即提案；模型非确定性及15分钟草稿期保留，40/20为测试用户明确提供，并非自动分配。用户.vscode未改，无外部日历、新依赖或推送。
+
+# 会话隔离、意图切换与灵活安排（2026-10-17）
+
+按用户f3d49b91需求先检查Git与162通过2跳过基线，保留此前未提交修复和用户.vscode。读取实际失败会话tool_calls/results/state，定位到精确链：提醒被stage成需end的事件；新haircut已被正确提取且find_slots12–18/60成功；propose_create被旧email的pending_task门禁拒绝，错误提示迫使模型stage email+haircut合并，重复旧email时长追问。不是空档失败/意图没提取，也未假定原始问题是前端stale响应。
+
+先写9项测试观察8失败1精确复现旧门禁，再实现flow.py显式task_context new/continue/resume/cancel/clarify、会话task_contexts表/独立snapshot/提案ID与生命周期；新scope清空旧字段，挂起保留，恢复自己的快照并回送模型。Agent有旧草稿时必须先边界握手，不能直接stage吞并，普通CRUD旧流程保持兼容。Store.confirm完成清当前活动state，但挂起任务独立保留。上下文支持new/parsing/awaiting_clarification/ready_for_proposal/awaiting_confirmation/executing/completed/cancelled/failed以及suspended。
+
+提醒entity保存title/at/notes并解释只支持本地事件、不支持定时通知或发邮件，不造时长或把提醒当事件反复问end。schedule_flexible复用下午12–18、同日not_before、真实cal.slots最多4候选；用户按review/option/context IDs选择才prepare，选择和最终确认分别重验。模型不得在review等待时自己propose/stage取第一空档。未增通知后台、外部日历或新框架。
+
+前端增加当前/挂起任务恢复取消菜单与空档卡/调整范围入口；chat补齐与按钮相同Abort/epoch规则，旧reply/旧finally不能盖新内容/解锁新busy。后端原每会话锁继续串行，返回request_id/context_id，合法旧结果仍存原请求。API增加context操作和slot选择，HTTP恢复不返回模型用原始task_state。搜索state保留scope；旧Demo fixture从system读取selectedID只取单行，修复新增目录后缀造成的离线替身回归。
+
+独立审查两次发现安全边界并先复现失败：continue会复活修改失败前旧提案；取消其他任务又会复活历史suspended提案。修复continue不恢复确认，仅显式resume可恢复；取消其他任务只可恢复本轮原本pending的服务端临时paused_proposal_id。两条回归通过，不放松原旧确认无效断言。独立最后181通过2跳过无新阻塞；再补恢复后冲突、跨日下界/无效提醒不污染状态两条，最终21新增测试，完整183通过2跳过0失败、92%，Ruff/format/JS语法通过。原断言保留；精确工具集合扩2项、旧两轮脚本补边界continue握手。两个旧live pytest未执行。
+
+精确六条对话用Agent+脚本模型+真实SQLite重演：共享范围→早餐先15→买菜45统一确认09–09:15/09:15–10；羽毛球14–15:30+甜品15:30–17统一确认；提醒能力说明→hair候选且旧email挂起。另覆盖新/继续/恢复/取消/歧义/失败、旧提案/过期/跨会话、无空档、禁止模型自选、请求回放、回滚和旧聊天响应乱序。全部合成数据，不是自然语言解析测试。
+
+真实小样本DeepSeek五轮：提醒→新理发→三点以后→恢复邮件→取消邮件。上限10/$0.03，实际8请求HTTP200、78611 tokens、API报告US$0.005698224。直接答复首次漏握手被context_required拒绝，模型自行continue同hair ID再查；实际后界15:15（符合15以后），不是强制恰好15。真实reminder notes含完整较长原句，resume后与原快照逐字段相等，未截成测试固定短句。保存记录断言同hair ID、下界>=15、resume原快照相等、cancel后hair仍挂起、HTTP通过；无日历新增/确认，原合成占用不变。证据data/context-sprint-20261017/live-report.json；未重试HTTP/Gemini或绕限制，.env/provider不变。
+
+浏览器独立localhost:8003 cookie/合成库/标注脚本模型，验收提醒→hair独立4选项→三点以后→恢复email/hair各自状态→cancelemail不改hair→选15–16生成确认（活动仍1）→确认后活动2且读回准确。控制台warn/error空，截图context-isolation-slots、flexible-slot-confirmation；临时页/服务已关闭。主8002保留DeepSeek覆盖与原数据库重启/刷新，用户已有7项仍保留，本轮没有在主日历发送创建/确认。只自动增建context表，不擅自拆解旧污染草稿。
+
+README/TESTING/ARCHITECTURE/REQUIREMENTS/DESIGN与详细CONTEXT_ISOLATION_2026-10-17.md同步，包含启动/测试命令。限制：LLM仍负责语义边界且可能先选错工具；结构门禁保底不等于语言判断完美。最多50未完成scope/目录70，草稿/提案/候选15分钟有效；已污染历史组合草稿保留可取消/重述，不自动拆解。提醒不会触发通知，空档不预测外部出行；本地单进程验证，不夸称多进程/公网多用户。无新依赖、密钥日志、远端推送或外部邮件。
+
+# GitHub提交前审查（2026-10-17，功能冻结）
+
+本轮只修正文档与.gitignore，保留全部此前源码/测试修改和用户.vscode；无暂存、commit、push或真实模型调用。完整门禁两次均183通过2跳过0失败、覆盖率92%，Ruff/format（37文件）/JS语法通过；独立审查同样通过，无提交阻塞发现。26项锁定依赖与本地一致。离线wheel构建及临时target安装成功，离开源码目录验证静态页面、HTTP、确认创建/修改/软删除/恢复、重开库持久化及schema3；复用已有依赖，不声称本次联网全新安装。临时脚本首次/tmp与/private/tmp路径断言失败，规范两侧Path后通过，未改产品实现。
+
+敏感信息审查只输出计数/路径类型：候选文本与226个可达Git对象中常见凭据模式及实际本机key精确匹配无命中；.env未跟踪且被忽略，模板为空密钥，数据/SQLite忽略。新增个人.vscode忽略，不删除或覆盖配置。README安装去除本机路径/特定Conda依赖；默认启动库可自动创建；schema、当前测试与历史付费调用、任务挂起/恢复、批量取消和冲突恢复规则同步至需求/产品/架构/设计/演示/测试文档。完整范围、打包限制、风险和建议提交清单见docs/PRE_SUBMIT_REVIEW_2026-10-17.md。origin未配置，GitHub发布/权限仍未验收。
+
+# 提交前小规模真实复验（2026-10-17，用户另行授权）
+
+用户批准最多10次HTTP请求复验。沿用CompatibleModel/ProbeTransport，进程覆盖DeepSeek/OpenRouter，密钥只读.env。首次受限环境ConnectError无HTTP响应，保留账本计数，经批准直接网络权限后继续，总10尝试含9HTTP200，无代理/VPN/Gemini请求，无访问限制错误。中性2+3、原生只读tool→observation→最终中文7通过；共享09–10买菜/早餐字段保留、切换理发独立候选/旧scope挂起、恢复原task逐字段一致通过。最后明确时间分配后生成提案，因预算在调用前耗尽返回本地error，无新HTTP，不宣称通过、不再请求。实际API报告55,532 tokens/$0.0044401388；失败连接无usage。用户日历未读写，合成库所有回合活动事件为空，未确认写入。证据data/pre-submit-live-20261017-120825-eb866d/report.json被忽略，脱敏报告docs/PRE_SUBMIT_LIVE_2026-10-17.md；只更新验收文档，未改Agent/provider/mock。两个旧live pytest未执行。完整离线门禁复跑183通过2跳过、92%，Ruff/format/JS通过。无Git暂存/提交/推送。
+
+# 最终提交准备（2026-10-17，用户授权提交并推送）
+
+停止真实模型调用，不扩展功能。docs/TESTING.md补充简洁可审计的Offline/Live/Verified/Not verified/Isolation摘要，明确提案、确认写入与浏览器live链路本轮未验收。最终凭据扫描当前候选与可达历史无命中；.env、.vscode/settings.json、原始评估报告及合成SQLite均未跟踪且命中忽略，无意外删除。提交清单只含此前源码修复、配套回归、合成截图、工程文档及忽略规则。当前origin未配置，已请求用户提供目标GitHub URL；不猜测仓库或擅自创建公开仓库。远程推送和网页验收须在目标明确后实际执行，不能提前宣称完成。
