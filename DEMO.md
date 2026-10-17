@@ -126,3 +126,37 @@ python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 800
 5. 核对统一提案：大扫除11–16（家里）、寄快递12–12:15（未填写地点），确认后两项同时出现。没有外部预约同步。
 
 另试“今天9点到10点在甲室做合成整理，11点在乙室做合成登记”→补“登记15分钟，其他不变”，应保留第一项。模型验证与确定性验证分开记录于[UX验收](docs/UX_TEST_2026-10-17.md)。重复完整演示换新数据库名，原句用当前真实日期，不硬编码某一天。
+
+## 当前推荐：批量取消、回收站与一键撤销
+
+8002保留本轮合成验收结果：3项均已恢复。要从干净初始状态重做，使用新的合成文件名：
+
+```bash
+cd /Users/jiayusui/Developer/projects/schedule-agent
+source .venv/bin/activate
+python - <<'PY'
+from datetime import datetime
+from scheduler.storage import Store
+from scripts.evaluate_trash import seed
+s = Store('data/trash-demo-01.sqlite3', 'Asia/Shanghai')
+if not s.calendar.search() and not s.calendar.trash():
+    seed(s, datetime.now(s.calendar.tz).date().isoformat())
+PY
+LLM_MODEL=deepseek/deepseek-v4.1-flash \
+LLM_ENDPOINT=https://openrouter.ai/api/v1 \
+APP_DATABASE=data/trash-demo-01.sqlite3 \
+python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 8003
+```
+
+1. 打开 http://127.0.0.1:8003/ ，输入“取消今天的所有安排”。一张清单显示3项与今天半开范围；确认前右侧仍3项。
+2. 取消勾选羽毛球，等待服务端更新为2项；或自然语言“保留下午的合成羽毛球，其他都取消”。只需一次“确认取消所选2项”，活动1/回收站2。
+3. 展开“回收站 · 保留7天”，核对原时间、删除/到期时间。恢复单项先生成提案再确认，活动2。
+4. 点击“撤销最近删除”：只直接恢复原批次仍在回收站的剩余1项，活动3；不会重复恢复刚才已恢复的项或恢复其他批次。
+5. 输入“取消本周所有安排”，新范围应重新包含3项（不继承旧排除）。确认后，从回收站选择“恢复这一删除批次”→核对3项→确认恢复。
+6. 若恢复时被新安排占用，页面显示具体冲突，整批未恢复；可以明确准备可行子集后另行确认，或取消，不会偷偷改时间。
+
+“查看回收站”可打开该面板；“恢复昨天删除的合成羽毛球”由模型先检索实际墓碑再提出恢复。“撤销刚才删除”的自然语言仍需确认；页面一键撤销是用户显式授权，不授予LLM执行权限。
+
+范围约定：周一至下周一，下午12–18；清单显示实际范围。升级自动迁移，无手工SQL。7天到期后不可恢复，清理是显式有界函数，见[本轮验收](docs/TRASH_TEST_2026-10-17.md)。既有永久删除记录不能由迁移恢复。
+
+不花模型费用验证：`RUN_LIVE_LLM=0 python -m pytest tests/test_trash.py -v`。真实评估入口`python -m scripts.evaluate_trash cancel_exclude_undo_after_schema|week|recovery_query|browser`已执行，不为演示报告重复运行或删账本绕预算。重做Demo用新的合成文件名，不清空普通开发库。

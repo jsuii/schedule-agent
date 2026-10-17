@@ -26,7 +26,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS requests (
                     session_id TEXT NOT NULL, id TEXT NOT NULL, result TEXT,
                     PRIMARY KEY(session_id,id));
-                PRAGMA user_version=2;
+                PRAGMA user_version=3;
             """)
 
     def new_session(self):
@@ -140,7 +140,11 @@ class Store:
                 conn.execute("SAVEPOINT calendar_write")
                 try:
                     payload = json.loads(row["payload"])
-                    if row["action"] == "batch":
+                    if row["action"] in ("cancel_batch", "restore_batch"):
+                        from scheduler.trash import execute
+
+                        result = execute(self, sid, row["action"], payload, proposal_id, conn)
+                    elif row["action"] == "batch":
                         from scheduler.conflicts import validate_resolution
 
                         if payload.get("context"):
@@ -160,25 +164,31 @@ class Store:
                             row["event_id"], row["version"], payload, conn=conn
                         )
                     else:
-                        event = self.calendar.delete(row["event_id"], row["version"], conn=conn)
-                    verb = {
-                        "create": "添加",
-                        "update": "修改",
-                        "delete": "删除",
-                        "batch": "统一调整",
-                    }[row["action"]]
-                    result = {
-                        "status": "committed",
-                        "action": row["action"],
-                        "event": event,
-                        "message": (
-                            "已原子执行并读回核验全部调整：\n"
-                            + "\n".join(describe(e) for e in events)
-                            + "\n仅修改本地日历，未同步任何外部预约。"
+                        event = self.calendar.delete(
+                            row["event_id"], row["version"], conn=conn, batch_id=proposal_id
                         )
-                        if row["action"] == "batch"
-                        else f"已{verb}并核验日程：{describe(event)}。",
-                    }
+                    if row["action"] not in ("cancel_batch", "restore_batch"):
+                        verb = {
+                            "create": "添加",
+                            "update": "修改",
+                            "delete": "删除",
+                            "batch": "统一调整",
+                        }[row["action"]]
+                        result = {
+                            "status": "committed",
+                            "action": row["action"],
+                            "event": event,
+                            "message": (
+                                "已原子执行并读回核验全部调整：\n"
+                                + "\n".join(describe(e) for e in events)
+                                + "\n仅修改本地日历，未同步任何外部预约。"
+                            )
+                            if row["action"] == "batch"
+                            else f"已{verb}并核验日程：{describe(event)}。",
+                        }
+                    if row["action"] == "delete":
+                        result.update(operation_id=proposal_id, event_ids=[event["id"]], count=1)
+                        result["message"] = "已移至回收站1项日程，7天内可恢复。"
                     conn.execute("RELEASE calendar_write")
                 except (CalendarError, sqlite3.Error) as exc:
                     # Keep a durable failed receipt, but never commit a mutation whose
@@ -201,7 +211,7 @@ class Store:
                 "UPDATE proposals SET status=?, result=? WHERE id=?",
                 (result["status"], json.dumps(result, ensure_ascii=False), proposal_id),
             )
-            if approve:
+            if approve or row["action"] in ("cancel_batch", "restore_batch"):
                 conn.execute("UPDATE sessions SET state=? WHERE id=?", ("{}", sid))
             # Persist the factual receipt in the same transaction as the mutation.
             turns = json.loads(
@@ -218,6 +228,14 @@ class Store:
                 (json.dumps(turns[-12:], ensure_ascii=False), sid),
             )
             return result
+
+    def last_deletion(self, sid):
+        with self.calendar.connect() as conn:
+            row = conn.execute(
+                "SELECT result FROM proposals WHERE session_id=? AND status='committed' AND action IN ('delete','cancel_batch') ORDER BY rowid DESC LIMIT 1",
+                (sid,),
+            ).fetchone()
+        return json.loads(row["result"]) if row else None
 
     def choose_plan(self, sid, plan_id):
         from scheduler.conflicts import validate_case

@@ -38,6 +38,20 @@ class Decision(Body):
     approve: bool
 
 
+class BatchSelection(Body):
+    selected_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
+class TrashReference(Body):
+    id: str = Field(min_length=1, max_length=64)
+    version: int = Field(ge=1)
+    deletion_batch_id: str = Field(min_length=1, max_length=64)
+
+
+class RestoreSelection(Body):
+    selected: list[TrashReference] = Field(min_length=1, max_length=1000)
+
+
 class Selection(Body):
     event_id: str = Field(min_length=1, max_length=64)
 
@@ -70,7 +84,12 @@ def create_app(settings=None, model=None, *, demo=False):
             if request.headers.get("content-type", "").split(";")[0] != "application/json":
                 return JSONResponse({"message": "请使用 JSON 请求"}, status_code=415)
             try:
-                if int(request.headers.get("content-length", "0")) > 32000:
+                limit = (
+                    200000
+                    if request.url.path.startswith(("/api/cancellations/", "/api/trash/"))
+                    else 32000
+                )
+                if int(request.headers.get("content-length", "0")) > limit:
                     return JSONResponse({"message": "请求体过大"}, status_code=413)
             except ValueError:
                 return JSONResponse({"message": "无效的请求长度"}, status_code=400)
@@ -123,6 +142,22 @@ def create_app(settings=None, model=None, *, demo=False):
             "model": settings.model if not demo else None,
         }
 
+    def undo_available(sid):
+        last = store.last_deletion(sid)
+        if not last:
+            return None
+        from scheduler.calendar import RETENTION_SECONDS
+        import time
+
+        eligible = [
+            e
+            for target in last["event_ids"]
+            if (e := store.calendar.trash_get(target))
+            and e["deletion_batch_id"] == last["operation_id"]
+            and store.calendar.timestamp(e["deleted_at"]) + RETENTION_SECONDS > time.time()
+        ]
+        return {"operation_id": last["operation_id"], "count": len(eligible)} if eligible else None
+
     @app.get("/api/state")
     async def state(request: Request):
         sid = request.state.sid
@@ -139,6 +174,7 @@ def create_app(settings=None, model=None, *, demo=False):
             "history": history,
             "events_truncated": len(store.calendar.search(limit=501)) > 500,
             "proposal": store.pending(sid),
+            "undo": undo_available(sid),
             "conflict": session["state"].get("conflict"),
             "candidates": session["state"].get("candidates", []),
             "timezone": settings.timezone,
@@ -168,6 +204,55 @@ def create_app(settings=None, model=None, *, demo=False):
         if locks[sid].locked():
             raise HTTPException(409, "助手正在处理，请稍候再确认。")
         return store.confirm(sid, proposal_id, body.approve)
+
+    @app.post("/api/cancellations/{proposal_id}/selection")
+    async def revise(proposal_id: str, body: BatchSelection, request: Request):
+        if locks[request.state.sid].locked():
+            raise HTTPException(409, "助手正在处理，请稍候")
+        from scheduler.trash import revise_cancel
+
+        return {"proposal": revise_cancel(store, request.state.sid, proposal_id, body.selected_ids)}
+
+    @app.get("/api/trash")
+    async def trash_view():
+        rows = store.calendar.trash(limit=1001)
+        return {"events": rows[:1000], "truncated": len(rows) > 1000, "retention_days": 7}
+
+    @app.post("/api/trash/restore")
+    async def restore_selected(body: RestoreSelection, request: Request):
+        if locks[request.state.sid].locked():
+            raise HTTPException(409, "助手正在处理，请稍候")
+        from scheduler.trash import propose_restore
+
+        expected = [r.model_dump() for r in body.selected]
+        return {
+            "proposal": propose_restore(
+                store, request.state.sid, event_ids=[e["id"] for e in expected], expected=expected
+            )
+        }
+
+    @app.post("/api/trash/batches/{batch_id}")
+    async def restore_batch(batch_id: str, request: Request):
+        if locks[request.state.sid].locked():
+            raise HTTPException(409, "助手正在处理，请稍候")
+        from scheduler.trash import propose_restore
+
+        rows = store.calendar.trash(batch_id=batch_id, limit=1001)
+        if len(rows) > 1000:
+            raise CalendarError("batch_too_large", hint="恢复批次超过1000项，请逐组选择")
+        return {
+            "proposal": propose_restore(
+                store, request.state.sid, event_ids=[e["id"] for e in rows], expected=rows
+            )
+        }
+
+    @app.post("/api/undo/{operation_id}")
+    async def undo(operation_id: str, request: Request):
+        if locks[request.state.sid].locked():
+            raise HTTPException(409, "助手正在处理，请稍候")
+        from scheduler.trash import undo
+
+        return undo(store, request.state.sid, operation_id)
 
     @app.post("/api/plans/{plan_id}")
     async def choose_plan(plan_id: str, request: Request):

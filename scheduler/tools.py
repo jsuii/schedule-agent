@@ -115,11 +115,71 @@ class TaskDraft(Arguments):
     relations: list[Relation] = Field(default_factory=list, max_length=16)
 
 
+class CancelScope(Arguments):
+    kind: Literal["today", "tomorrow", "week", "afternoon", "date", "interval"]
+    date: str | None = None
+    start: str | None = None
+    end: str | None = None
+
+    @model_validator(mode="after")
+    def shape(self):
+        if self.kind == "date" and (not self.date or self.start or self.end):
+            raise ValueError("date需要YYYY-MM-DD日期")
+        if self.kind == "interval" and (not self.start or not self.end or self.date):
+            raise ValueError("interval需要start/end")
+        if self.kind not in ("date", "interval") and any((self.date, self.start, self.end)):
+            raise ValueError("相对范围不能附加其他时间字段")
+        return self
+
+
+class CancelRange(Arguments):
+    scope: CancelScope | None = None
+    continue_previous: bool = False
+    exclude_ids: list[str] = Field(default_factory=list, max_length=1000)
+    exclude_queries: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def shape(self):
+        if self.continue_previous == (self.scope is not None):
+            raise ValueError("新请求提供scope；继续清单使用continue_previous=true且不传scope")
+        return self
+
+
+class TrashSearch(Arguments):
+    query: str = Field(default="", max_length=200)
+    deleted_start: str | None = None
+    deleted_end: str | None = None
+
+
+class Restore(Arguments):
+    event_ids: list[str] = Field(default_factory=list, max_length=1000)
+    operation_id: str | None = None
+    latest: bool = False
+
+    @model_validator(mode="after")
+    def shape(self):
+        if sum((bool(self.event_ids), self.operation_id is not None, self.latest)) != 1:
+            raise ValueError("只提供观测event_ids、操作ID、或latest=true之一")
+        return self
+
+
 class Delete(Arguments):
     event_id: str
 
 
 TOOLS = {
+    "propose_cancel_range": (
+        CancelRange,
+        "用户明确取消全部/某日期范围时使用，一次检索完整实际集合并只准备待确认清单，不要求逐条选择。scope.kind=today/tomorrow/week(周一至下周一)/afternoon(今天12点至18点)/date(YYYY-MM-DD)/interval(ISO start/end半开区间)。模型不构造删除清单。排除用唯一标题子串exclude_queries或清单真实exclude_ids；歧义问具体项。用户明确继续当前清单时continue_previous=true且不传scope，保留已排除项；新任务必须scope重新开始。",
+    ),
+    "search_trash": (
+        TrashSearch,
+        "查看回收站，可用query匹配标题，deleted_start/deleted_end过滤删除时间（半开区间）；返回真实ID、版本和来源批次供恢复，普通搜索不返回已删除事件。",
+    ),
+    "propose_restore": (
+        Restore,
+        "仅提出恢复，不直接写入。用户撤销刚才删除/恢复刚才全部时latest=true，来源本会话最近已提交删除；或提供已查询回收站的event_ids、或观测到的本会话删除operation_id。检查7天有效期与冲突，必要时用户在页面明确选择可行子集；绝不默默改时间或覆盖。",
+    ),
     "stage_task": (
         TaskDraft,
         "一句话包含多个事件或需要多轮补全时，先用此工具保存所有独立意图（包括不完整事件）。intents用稳定intent_id，event仅含该事件已知字段；未提地点留空，不继承其他事件地点。后续只传同intent_id的补充字段，不省略已知事件重新开始。关系first/second用intent_id；kind interrupt表示first可暂停容纳second，parallel表示并行，sequential表示first须先完成。仅用户明确允许时confirmed=true；往返包含在所填时间且注意力已核实时分别travel_included/attention_verified=true，否则不要猜测。只更新关系可传intents=[]。程序自动给窄澄清/冲突方案或统一提案，本轮结束。",
@@ -168,6 +228,11 @@ def public_schema(model):
                 strip_private(child)
 
     strip_private(schema)
+    if model is CancelRange:
+        schema["properties"]["scope"] = {
+            **schema["$defs"]["CancelScope"],
+            "description": 'JSON object，例如 {"kind":"today"}。继续清单时省略，不编码为字符串。',
+        }
     return schema
 
 
@@ -185,7 +250,8 @@ SCHEMAS = [
 
 
 class Tools:
-    def __init__(self, store, sid):
+    def __init__(self, store, sid, now=None):
+        self.now = now
         self.store, self.sid, self.cal = store, sid, store.calendar
         self.state = store.session(sid)["state"]
         # A card click authorizes selection for one model turn, not every future task.
@@ -219,7 +285,11 @@ class Tools:
         except ValidationError as exc:
             return {
                 "error": "invalid_arguments",
-                "hint": "参数不符合工具 schema；propose_update 使用 {event_id, patch:{变更字段}}；propose_resolution 的 update 还需要整数 version。不要猜测 ID 或缺失信息",
+                "hint": (
+                    'scope 必须为 JSON object，例如 {"scope":{"kind":"today"}}，不能编码成字符串；继续清单用 {"continue_previous":true} 并省略 scope'
+                    if name == "propose_cancel_range"
+                    else "参数不符合工具 schema；propose_update 使用 {event_id, patch:{变更字段}}；propose_resolution 的 update 还需要整数 version。不要猜测 ID 或缺失信息"
+                ),
                 "issues": [
                     {"path": ".".join(str(p) for p in e["loc"])[:200], "type": e["type"]}
                     for e in exc.errors(
@@ -240,6 +310,61 @@ class Tools:
             return {"error": "invalid_arguments", "hint": "日期、时长或字段无效，请向用户核实"}
 
     def _execute(self, name, value):
+        if name == "propose_cancel_range":
+            from scheduler.trash import propose_cancel
+
+            result = propose_cancel(
+                self.store,
+                self.sid,
+                value.scope.model_dump(exclude_none=True) if value.scope else None,
+                now=self.now,
+                exclude_ids=value.exclude_ids,
+                exclude_queries=value.exclude_queries,
+                continue_previous=value.continue_previous,
+            )
+            self.state = self.store.session(self.sid)["state"]
+            if result is None:
+                return {"question": "指定范围内没有需要取消的日程，未作任何修改。"}
+            if "question" in result:
+                return result
+            return {"proposal": result}
+        if name == "search_trash":
+            events = self.cal.trash(**value.model_dump(), limit=1001)
+            self.state["trash_candidates"] = events[:1000]
+            self._save_state()
+            return {
+                "view": "trash",
+                "events": events[:1000],
+                "truncated": len(events) > 1000,
+                "message": f"回收站找到{len(events[:1000])}项"
+                + ("（仅前1000项，请缩小条件）" if len(events) > 1000 else "")
+                + "，请在回收站面板查看或恢复。",
+            }
+        if name == "propose_restore":
+            from scheduler.trash import propose_restore
+
+            operation = value.operation_id
+            if value.latest:
+                last = self.store.last_deletion(self.sid)
+                if not last:
+                    raise CalendarError("operation_not_found", hint="本会话没有可撤销的已提交删除")
+                operation = last["operation_id"]
+            expected = None
+            if value.event_ids:
+                observed = self.state.get("trash_candidates", [])
+                expected = [e for e in observed if e["id"] in value.event_ids]
+                if {e["id"] for e in expected} != set(value.event_ids):
+                    raise CalendarError("not_observed", hint="请先查询回收站实际目标")
+            return {
+                "proposal": propose_restore(
+                    self.store,
+                    self.sid,
+                    event_ids=value.event_ids,
+                    operation_id=operation,
+                    expected=expected,
+                )
+            }
+
         if name == "stage_task":
             from scheduler.tasks import stage
 

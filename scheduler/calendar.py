@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import time
 from typing import Literal
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -13,6 +14,9 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+RETENTION_SECONDS = 7 * 86400
 
 
 CORE = {"title", "start", "end", "location", "notes"}
@@ -69,6 +73,13 @@ class Calendar:
             if "attributes" not in columns:
                 conn.execute("ALTER TABLE events ADD COLUMN attributes TEXT NOT NULL DEFAULT '{}'")
 
+            for name, kind in (("deleted_at", "INTEGER"), ("deletion_batch_id", "TEXT")):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE events ADD COLUMN {name} {kind}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS events_trash ON events(deleted_at,deletion_batch_id)"
+            )
+
     @contextmanager
     def connect(self):
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -118,6 +129,14 @@ class Calendar:
         if row is None:
             return None
         result = dict(row)
+        deleted_at = result.pop("deleted_at", None)
+        batch_id = result.pop("deletion_batch_id", None)
+        if deleted_at is not None:
+            result.update(
+                deleted_at=self.iso(deleted_at),
+                deletion_batch_id=batch_id,
+                expires_at=self.iso(deleted_at + RETENTION_SECONDS),
+            )
         attributes = json.loads(result.pop("attributes", "{}"))
         defaults = EventInput(title=result["title"], start="", end="").model_dump()
         result.update({k: attributes.get(k, v) for k, v in defaults.items() if k not in CORE})
@@ -134,13 +153,15 @@ class Calendar:
     def get(self, event_id: str, conn=None):
         if conn is not None:
             return self.serialize(
-                conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+                conn.execute(
+                    "SELECT * FROM events WHERE id=? AND deleted_at IS NULL", (event_id,)
+                ).fetchone()
             )
         with self.connect() as db:
             return self.get(event_id, db)
 
     def search(self, query="", start=None, end=None, limit=100):
-        clauses, params = [], []
+        clauses, params = ["deleted_at IS NULL"], []
         if start:
             clauses.append("end > ?")
             params.append(self.timestamp(start))
@@ -181,21 +202,36 @@ class Calendar:
             with self.connect() as db:
                 return self.conflicts(start, end, exclude_id, db)
         rows = conn.execute(
-            "SELECT * FROM events WHERE start < ? AND end > ? AND id != ? ORDER BY start",
+            "SELECT * FROM events WHERE deleted_at IS NULL AND start < ? AND end > ? AND id != ? ORDER BY start",
             (end_ts, start_ts, exclude_id or ""),
         ).fetchall()
         return [self.serialize(r) for r in rows]
 
-    def _write(self, action, payload, event_id=None, version=None, conn=None):
+    def _write(self, action, payload, event_id=None, version=None, conn=None, batch_id=None):
         if conn is None:
             with self.transaction() as db:
-                return self._write(action, payload, event_id, version, db)
+                return self._write(action, payload, event_id, version, db, batch_id)
         old = self.get(event_id, conn) if event_id else None
         if action != "create" and (old is None or old["version"] != version):
             raise CalendarError("stale", hint="日程已变化，请重新查询并确认")
         if action == "delete":
-            conn.execute("DELETE FROM events WHERE id=? AND version=?", (event_id, version))
+            deleted_at = int(time.time())
+            batch_id = batch_id or uuid4().hex
+            conn.execute(
+                "UPDATE events SET deleted_at=?,deletion_batch_id=?,version=version+1 WHERE id=? AND version=? AND deleted_at IS NULL",
+                (deleted_at, batch_id, event_id, version),
+            )
             if self.get(event_id, conn) is not None:
+                raise CalendarError("verification_failed")
+            trashed = self.trash_get(event_id, conn)
+            expected = {
+                **old,
+                "version": version + 1,
+                "deleted_at": self.iso(deleted_at),
+                "deletion_batch_id": batch_id,
+                "expires_at": self.iso(deleted_at + RETENTION_SECONDS),
+            }
+            if trashed != expected:
                 raise CalendarError("verification_failed")
             return old
         merged = {k: old[k] for k in EventInput.model_fields} if old else {}
@@ -248,8 +284,8 @@ class Calendar:
     def update(self, event_id, version, patch, conn=None):
         return self._write("update", patch, event_id, version, conn)
 
-    def delete(self, event_id, version, conn=None):
-        return self._write("delete", {}, event_id, version, conn)
+    def delete(self, event_id, version, conn=None, batch_id=None):
+        return self._write("delete", {}, event_id, version, conn, batch_id)
 
     def slots(self, start, end, duration_minutes, exclude_id=None):
         begin, stop = self.timestamp(start), self.timestamp(end)
@@ -330,7 +366,9 @@ class Calendar:
                 self.check_constraints(before, after)
             prepared.append({"action": action, "before": before, "after": after})
         existing = [
-            self.serialize(r) for r in conn.execute("SELECT * FROM events") if r["id"] not in ids
+            self.serialize(r)
+            for r in conn.execute("SELECT * FROM events WHERE deleted_at IS NULL")
+            if r["id"] not in ids
         ]
         final = existing + [p["after"] for p in prepared]
         # Existing-existing overlaps need not be re-authorized; every touched pair is checked.
@@ -378,3 +416,56 @@ class Calendar:
         if actual != expected:
             raise CalendarError("verification_failed")
         return actual
+
+    def trash_get(self, event_id, conn=None):
+        if conn is None:
+            with self.connect() as db:
+                return self.trash_get(event_id, db)
+        return self.serialize(
+            conn.execute(
+                "SELECT * FROM events WHERE id=? AND deleted_at IS NOT NULL", (event_id,)
+            ).fetchone()
+        )
+
+    def trash(self, query="", deleted_start=None, deleted_end=None, batch_id=None, limit=1000):
+        if (
+            deleted_start
+            and deleted_end
+            and self.timestamp(deleted_end) <= self.timestamp(deleted_start)
+        ):
+            raise CalendarError("invalid_range")
+        clauses, params = ["deleted_at IS NOT NULL"], []
+        if deleted_start:
+            clauses.append("deleted_at>=?")
+            params.append(self.timestamp(deleted_start))
+        if deleted_end:
+            clauses.append("deleted_at<?")
+            params.append(self.timestamp(deleted_end))
+        if batch_id:
+            clauses.append("deletion_batch_id=?")
+            params.append(batch_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY deleted_at DESC,start,id",
+                params,
+            ).fetchall()
+        return [self.serialize(r) for r in rows if query.casefold() in r["title"].casefold()][
+            :limit
+        ]
+
+    def cleanup_trash(self, limit=100):
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+            raise CalendarError("invalid_cleanup_limit")
+        with self.transaction() as conn:
+            rows = conn.execute(
+                "SELECT id FROM events WHERE deleted_at IS NOT NULL AND deleted_at<=? ORDER BY deleted_at,id LIMIT ?",
+                (int(time.time()) - RETENTION_SECONDS, limit),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "DELETE FROM events WHERE id=? AND deleted_at IS NOT NULL AND deleted_at<=?",
+                    (row["id"], int(time.time()) - RETENTION_SECONDS),
+                )
+            return len(rows)

@@ -31,8 +31,45 @@ function renderEvents() {
   for(const e of events){const card=el('article',undefined,'event-card');card.append(el('div',`${stamp(e.start)} — ${stamp(e.end)}`,'event-time'),el('h3',e.title));if(e.location)card.append(el('p','⌖ '+e.location));if(e.notes)card.append(el('p',e.notes));root.append(card);}
   if(current.events_truncated)root.append(el('p','仅显示前500条，请使用对话按日期检索。'));
 }
+async function operation(path,data) {
+  if(busy)return;setBusy(true);
+  try{const result=await api(path,data);if(result.message)message('assistant',result.message,result.status==='error',result.status);await refresh();}
+  catch(e){message('assistant',e.message,true);await refresh();}
+  finally{setBusy(false);}
+}
+function restoreRefs(events){return events.map(e=>({id:e.id,version:e.version,deletion_batch_id:e.deletion_batch_id}));}
+function renderBatchOperation(p,root) {
+  const data=p.event,isCancel=p.action==='cancel_batch',card=el('section',undefined,'proposal batch-review');
+  const count=data.selected.length;
+  card.append(el('h3',isCancel?`取消所选 ${count} 项日程？`:`恢复所选 ${count} 项日程？`));
+  if(isCancel)card.append(el('p',`${stamp(data.range.start)}–${stamp(data.range.end)} · ${current.timezone}`));
+  const list=el('div',undefined,'batch-list');
+  if(isCancel){
+    const selected=new Set(data.selected.map(e=>e.id));
+    for(const e of data.snapshot){const row=el('label',undefined,'batch-row'),check=el('input');check.type='checkbox';check.checked=selected.has(e.id);check.setAttribute('aria-label','取消 '+e.title+' '+stamp(e.start));check.value=e.id;check.disabled=busy;
+      check.onchange=()=>{const ids=Array.from(root.querySelectorAll('input[type="checkbox"]')).filter(x=>x.checked).map(x=>x.value);if(!ids.length){check.checked=true;message('assistant','至少选择一项；全部保留请点击取消。');return;}operation('/api/cancellations/'+p.id+'/selection',{selected_ids:ids});};row.append(check,el('span',`${e.title} · ${stamp(e.start)}–${stamp(e.end)}`));list.append(row);}
+    if(data.unresolved_exclusion?.length)card.append(el('p','保留对象需要明确，请取消勾选要保留的具体日程。','error'));
+  }else{for(const e of data.selected)list.append(el('p',`${e.title} · ${stamp(e.start)}–${stamp(e.end)}`));}
+  card.append(list);
+  if(!isCancel && data.conflicts?.length){
+    card.append(el('p','存在恢复冲突，尚未恢复。','error'));
+    for(const f of data.conflicts)card.append(el('p',`${f.event.title} 与 ${f.existing.title}：${stamp(f.overlap.start)}–${stamp(f.overlap.end)}`));
+    if(data.feasible_ids.length){const subset=el('button',`仅准备恢复可行的 ${data.feasible_ids.length} 项`,'secondary');subset.disabled=busy;subset.onclick=()=>operation('/api/trash/restore',{selected:restoreRefs(data.selected.filter(e=>data.feasible_ids.includes(e.id)))});card.append(subset);}
+  }
+  const actions=el('div',undefined,'actions'),yes=el('button',`确认${isCancel?'取消':'恢复'}所选 ${count} 项日程`,'primary'),no=el('button','取消','secondary');
+  const locked=!!(isCancel?data.unresolved_exclusion?.length:data.conflicts?.length);yes.setAttribute('data-locked',String(locked));yes.disabled=busy||locked;no.disabled=busy;
+  for(const [button,approve] of [[yes,true],[no,false]]){button.onclick=async()=>{if(busy)return;setBusy(true);try{const r=await api('/api/proposals/'+p.id,{approve});message('assistant',r.message,r.status==='error',r.status);await refresh();}catch(e){message('assistant',e.message,true);await refresh();}finally{setBusy(false);}};actions.append(button);}
+  card.append(el('p',isCancel?'确认后移至回收站，7天内可恢复。':'核对后确认，恢复保留原时间。'),actions);root.append(card);
+}
+function renderUndo(undo){const root=$('#undo');root.replaceChildren();root.hidden=!undo;if(!undo)return;root.append(el('span',`最近取消的 ${undo.count} 项可恢复 · `));const button=el('button','撤销最近删除','quiet');button.disabled=busy;button.onclick=()=>operation('/api/undo/'+undo.operation_id,{});root.append(button);}
+async function loadTrash(){const root=$('#trash-events');const data=await api('/api/trash');root.replaceChildren();if(!data.events.length){root.append(el('p','回收站为空。'));return;}
+  const batches=new Set();for(const e of data.events){const row=el('article',undefined,'trash-row');row.append(el('strong',e.title),el('p',stamp(e.start)+'–'+stamp(e.end)),el('p','删除：'+stamp(e.deleted_at)+' · 到期：'+stamp(e.expires_at)));const restore=el('button','恢复此项','secondary');restore.setAttribute('data-locked',String(new Date(e.expires_at).getTime()<=Date.now()));restore.disabled=busy||new Date(e.expires_at).getTime()<=Date.now();restore.onclick=()=>operation('/api/trash/restore',{selected:restoreRefs([e])});row.append(restore);root.append(row);batches.add(e.deletion_batch_id);}
+  for(const id of batches){const b=el('button','恢复这一删除批次 · '+stamp(data.events.find(e=>e.deletion_batch_id===id).deleted_at),'secondary');b.disabled=busy;b.onclick=()=>operation('/api/trash/batches/'+id,{});root.append(b);}
+  if(data.truncated)root.append(el('p','仅显示前1000项，可用对话筛选回收站。'));
+}
 function renderProposal(p) {
   const root=$('#proposal');root.replaceChildren();root.hidden=!p;if(!p)return;
+  if(p.action==='cancel_batch'||p.action==='restore_batch'){renderBatchOperation(p,root);return;}
   const card=el('section',undefined,'proposal');
   card.append(el('h3',`${({create:'添加',update:'修改',delete:'删除',batch:'统一调整'})[p.action]}日程 · 等待你的确认`));
   if(p.before && p.action==='update')card.append(el('pre','原日程\n'+detail(p.before)));
@@ -70,7 +107,7 @@ function renderCandidates(list, visible) {
 function renderTrace(trace) {
   const root=$('#trace');root.replaceChildren();if(!trace?.length)return;
   const d=el('details'), list=el('ol');d.append(el('summary',`本轮使用了 ${trace.length} 次工具`));
-  const labels={search_events:'检索日程',find_slots:'寻找空档',propose_create:'准备添加',propose_update:'准备修改',propose_delete:'准备删除',stage_task:'整理多项安排',propose_resolution:'准备统一调整',ask_user:'请求补充'};
+  const labels={search_events:'检索日程',find_slots:'寻找空档',propose_create:'准备添加',propose_update:'准备修改',propose_delete:'准备删除',propose_cancel_range:'准备批量取消',search_trash:'查看回收站',propose_restore:'准备恢复',stage_task:'整理多项安排',propose_resolution:'准备统一调整',ask_user:'请求补充'};
   for(const t of trace){const code=t.result.error;list.append(el('li',`${labels[t.tool]||t.tool} · ${code?'未执行（'+code+'）':t.result.proposal?'等待确认':t.result.question?'等待回答':'已返回结果'}`));}d.append(list);root.append(d);
 }
 async function refresh(initial=false) {
@@ -83,16 +120,17 @@ async function refresh(initial=false) {
     const b=el('button',demoIndex<demoPrompts.length?'演示下一步：'+demoPrompts[demoIndex]:'演示步骤已结束');b.id='demo-next';b.disabled=demoIndex>=demoPrompts.length||busy||!!current.proposal;b.onclick=()=>sendText(demoPrompts[demoIndex++]);notice.append(b);
   }else if(!current.model_configured)notice.textContent='尚未配置真实模型。网页与本地日历已就绪；配置 .env 后重启即可使用自然语言，或按 README 启动独立的固定脚本演示。';
   if(initial){$('#messages').replaceChildren();for(const m of current.history)message(m.role,m.content);}
-  renderEvents();renderConflict(current.conflict);renderProposal(current.proposal);renderCandidates(current.candidates,current.candidates.length>1&&!current.proposal);
+  renderUndo(current.undo);if($('#trash-panel').open)await loadTrash();renderEvents();renderConflict(current.conflict);renderProposal(current.proposal);renderCandidates(current.candidates,current.candidates.length>1&&!current.proposal);
 }
-function setBusy(value){busy=value;$('#send').disabled=value;$('#new-chat').disabled=value;$('#input').disabled=value;$('#processing').textContent=value?'正在处理，请稍候…':'Enter 发送 · Shift + Enter 换行';document.querySelectorAll('#proposal button,#candidates button,#conflict button,#conflict input').forEach(b=>b.disabled=value);if($('#demo-next'))$('#demo-next').disabled=value||demoIndex>=demoPrompts.length||!!current?.proposal;}
+function setBusy(value){busy=value;$('#send').disabled=value;$('#new-chat').disabled=value;$('#input').disabled=value;$('#processing').textContent=value?'正在处理，请稍候…':'Enter 发送 · Shift + Enter 换行';document.querySelectorAll('#proposal button,#candidates button,#conflict button,#conflict input,#undo button,#trash-panel button,#proposal input').forEach(b=>b.disabled=value||b.dataset?.locked==='true');if($('#demo-next'))$('#demo-next').disabled=value||demoIndex>=demoPrompts.length||!!current?.proposal;}
 async function sendText(text) {
   text=text?.trim();if(!text||busy)return;
   message('user',text);$('#input').value='';setBusy(true);$('#candidates').hidden=true;
-  try{const result=await api('/api/chat',{text,request_id:crypto.randomUUID()});message('assistant',result.message,result.status==='error');renderTrace(result.trace);await refresh();renderCandidates(result.candidates||[],result.status==='clarification');}
+  try{const result=await api('/api/chat',{text,request_id:crypto.randomUUID()});message('assistant',result.message,result.status==='error');renderTrace(result.trace);await refresh();if(result.view==='trash'){$('#trash-panel').open=true;await loadTrash();}renderCandidates(result.candidates||[],result.status==='clarification');}
   catch(error){message('assistant',error.message,true);try{await refresh();}catch{/* Keep visible network error. */}}
   finally{setBusy(false);$('#input').focus();if(current?.demo)await refresh();}
 }
+$('#trash-panel').ontoggle=()=>{if($('#trash-panel').open)loadTrash().catch(e=>message('assistant',e.message,true));};
 $('#chat-form').onsubmit=e=>{e.preventDefault();sendText($('#input').value);};
 $('#input').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendText($('#input').value);}};
 $('#date').onchange=renderEvents;$('#all-dates').onclick=()=>{$('#date').value='';renderEvents();};

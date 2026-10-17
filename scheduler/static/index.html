@@ -10,6 +10,7 @@
 <div id="notice" class="notice" hidden></div>
 <div id="messages" class="messages" role="log" aria-live="polite"></div>
 <div id="conflict" hidden></div>
+<div id="undo" hidden></div>
 <div id="proposal" hidden></div>
 <div id="candidates" hidden></div>
 <div id="trace" class="trace"></div>
@@ -19,7 +20,7 @@
 <div class="composer-note"><span id="processing">Enter 发送 · Shift + Enter 换行</span><span>写入前由你确认</span></div>
 </div>
 </section>
-<aside class="agenda" aria-label="日程列表"><div class="agenda-top"><div><div class="eyebrow">YOUR CALENDAR</div><h2>日程一览<span id="count">0</span></h2></div><button id="refresh" class="quiet" aria-label="刷新日程">↻</button></div><div class="timezone" id="timezone">Asia/Shanghai</div><label class="date-filter" for="date">查看日期<input type="date" id="date"></label><div class="agenda-label"><span id="date-label">所有安排</span><button id="all-dates" class="quiet small">全部日期</button></div><div id="events"></div><div class="aside-foot"><span class="dot"></span>本地日历 · 确认后保存</div></aside>
+<aside class="agenda" aria-label="日程列表"><div class="agenda-top"><div><div class="eyebrow">YOUR CALENDAR</div><h2>日程一览<span id="count">0</span></h2></div><button id="refresh" class="quiet" aria-label="刷新日程">↻</button></div><div class="timezone" id="timezone">Asia/Shanghai</div><label class="date-filter" for="date">查看日期<input type="date" id="date"></label><div class="agenda-label"><span id="date-label">所有安排</span><button id="all-dates" class="quiet small">全部日期</button></div><div id="events"></div><details id="trash-panel"><summary>回收站 · 保留7天</summary><div id="trash-events"></div></details><div class="aside-foot"><span class="dot"></span>本地日历 · 确认后保存</div></aside>
 </main><footer>留白 / SCHEDULE AGENT<span>让每一步安排，都有据可查。</span></footer>
 </div>
 </body></html>
