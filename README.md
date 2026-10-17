@@ -150,6 +150,8 @@ python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 800
 RUN_LIVE_LLM=0 sh scripts/check.sh
 ```
 
+[GitHub Actions 离线 CI](.github/workflows/ci.yml) 配置为在推送到 `main` 或向 `main` 创建/更新 PR 时运行：Ubuntu 24.04、Python 3.12、Node.js 24，按锁定约束安装依赖后复用上述门禁。无需 API key；`RUN_LIVE_LLM=0`，测试使用临时合成数据库。提交并推送工作流后可在仓库 Actions/PR 检查中查看实际结果。
+
 门禁包含 pytest/覆盖率、Ruff lint/format 和 JS 语法检查。两项真实模型测试须主动开启，会发送合成数据并产生费用：
 
 ```bash

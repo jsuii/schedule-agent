@@ -1,0 +1,54 @@
+name: Offline quality checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-checks:
+    name: Python 3.12 / offline checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RUN_LIVE_LLM: "0"
+      LLM_MODEL: ""
+      LLM_API_KEY: ""
+      # Fail locally if a future test accidentally uses the default provider.
+      LLM_ENDPOINT: http://127.0.0.1:9/v1
+      APP_CONFIG: ""
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            pyproject.toml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install locked runtime and test dependencies
+        run: |
+          python -m pip install -e '.[dev]' -c requirements.lock
+          python -m pip check
+
+      - name: Run offline tests, coverage, lint, format and JS checks
+        env:
+          APP_DATABASE: ${{ runner.temp }}/schedule-agent-ci/calendar.sqlite3
+        run: sh scripts/check.sh
