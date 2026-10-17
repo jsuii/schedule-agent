@@ -1,165 +1,176 @@
 # 留白 · 中文日程 Agent
 
-一个本地运行的网页日程助手：LLM 自主选择工具、多步检索与澄清；应用负责校验、冲突判断、安全确认和 SQLite 持久化。
+一个本地运行的日程助手：通过原生 LLM 工具调用理解中文安排，以独立任务上下文保留多轮信息，让用户确认具体变更后，再通过 SQLite 事务写入日历。
 
-**当前状态：独立任务可挂起、恢复及取消；灵活安排先选真实空档再确认；提醒准确说明能力限制。离线183通过、2个live默认跳过，覆盖率92%。** 此前真实DeepSeek任务切换检查8请求、78611 tokens、API报告US$0.005698224，无日历写入。详见[任务隔离验收](docs/CONTEXT_ISOLATION_2026-10-17.md)。.env默认及原日历保留。
+面对多事件、缺失时间和冲突约束，留白保留草稿并针对缺项追问，避免遗漏安排或未经确认写入。
 
-历史多事件解析修复阶段：拒绝仅含ID的空提取，保留共享时间范围与明确时长，针对实际缺失分配追问；完整离线159通过2跳过、覆盖率92%。五句真实DeepSeek抽查共5请求/37479 tokens/US$0.011012875，未执行日程写入。数据流证据和边界见[多事件回归验收](docs/SHARED_TIME_REGRESSION_2026-10-17.md)。
+**验证摘要 · 2026-10-17：** 离线测试 **183 passed、2 live tests skipped，覆盖率92%**。独立真实模型复验已验证工具调用与任务切换；本轮完整的“最终提案→确认写入”链路尚未验收。[查看验证范围 ↓](#测试与验证)
 
-## 已实现
+## 核心功能与技术栈
 
-- 中文对话网页，支持手机宽度、对话历史、日程列表、日期筛选、候选选择、工具执行摘要。
-- 真正的 `model → tool → observation → model` 循环；缺失信息和冲突会回到模型继续决策。
-- 真实 SQLite 新建、查询、修改、删除；会话、提案和幂等回执跨重启保存。
-- 标题/地点/备注检索、中文短词模糊召回、日期区间过滤、同名候选消歧。
-- 精确冲突事实、稳定ID的多方案与自定义输入；显式核实的可暂停嵌套；批量调整单次确认、原子回滚。
-- 新建、修改和删除先展示完整提案，由用户按钮确认；一键撤销本身是用户明确恢复授权；确认时再校验冲突和版本，写后读回。
-- 模型自由文本不能当作成功回执；澄清由模型选择字段、程序生成中文问题，避免夹带虚假成功声明。
-- 独立 provider/interface，可更换 endpoint/model/key，无需修改 Agent 或业务服务。
+- **中文对话式日程 CRUD：** 创建、查询、修改、取消；支持标题相似度匹配及标题、地点、备注检索，多候选时要求明确选择。
+- **多事件规划：** 保留部分草稿、共享时间范围及事件关系；缺少时间分配时追问，不猜测时长、自动均分或假定并行。
+- **独立任务上下文：** 支持挂起、恢复和取消未完成任务，避免新请求混入旧草稿；下午灵活安排提供真实空档供用户选择。
+- **冲突方案与确认：** 展示具体重叠、经过校验的替代方案，并在方案选择和最终确认时重新检查约束。
+- **批量操作与恢复：** 批量取消、保留7天的回收站，以及显式撤销和恢复。
 
-## 环境与安装
+**技术栈：** Python 3.12+、FastAPI、Pydantic、HTTPX、SQLite、原生 HTML/CSS/JavaScript。测试使用 pytest、pytest-cov、Ruff 和 Node.js；无需前端构建或外部日历服务。
 
-需要 **Python 3.12+**。测试另需 Node.js（运行实际 JavaScript/DOM 请求生命周期测试及语法检查，无 npm 依赖）。进入克隆后的仓库根目录：
+## 技术架构
+
+```mermaid
+flowchart TD
+    UI[中文聊天与日历界面] --> API[FastAPI：会话与请求校验]
+    API --> Agent[Agent：有界推理循环]
+    Agent <--> Provider[Model 接口：Chat Completions 适配器]
+    Agent --> Tools[Pydantic 工具参数校验]
+    Tools --> Read[检索、空档与工具结果]
+    Read --> Agent
+    Tools --> State[任务草稿与挂起上下文]
+    Tools --> Proposal[已校验提案或澄清问题]
+    Proposal --> UI
+    UI -->|用户明确批准| Confirm[独立确认端点]
+    Confirm --> Tx[版本与冲突重验、原子写入、读回核验]
+    Tx --> DB[(SQLite)]
+    State <--> DB
+    Proposal --> DB
+```
+
+| 关键组件 | 职责 |
+|---|---|
+| [`agent.py`](scheduler/agent.py)、[`provider.py`](scheduler/provider.py) | 原生模型→工具→结果循环；可替换模型接口、协议校验与执行上限。 |
+| [`tools.py`](scheduler/tools.py)、[`flow.py`](scheduler/flow.py) | 严格工具参数、目标选择门控、任务边界与空档候选。 |
+| [`tasks.py`](scheduler/tasks.py)、[`conflicts.py`](scheduler/conflicts.py) | 增量事件草稿、共享范围、关系约束与可行冲突方案。 |
+| [`calendar.py`](scheduler/calendar.py)、[`storage.py`](scheduler/storage.py)、[`trash.py`](scheduler/trash.py) | 时间归一、检索、冲突检查、提案、事务、持久化与恢复。 |
+| [`app.py`](scheduler/app.py)、[`static/`](scheduler/static/) | 本地 HTTP API、会话与安全校验、确认界面，以及迟到响应防护。 |
+
+## 关键工程设计
+
+**原生 Tool Calling。** 模型理解意图、解释日期并选择工具，程序校验参数并返回真实结果；不是硬编码意图分类器。可通过配置切换兼容模型。默认最多8次调用/轮，HTTP 超时30秒、整轮90秒，不自动重试。
+
+**任务上下文隔离。** 未完成任务保存独立快照，模型显式选择新建、继续、恢复、取消或澄清。新消息暂停旧确认，仅显式恢复可重新使用有效提案；共享范围保持组级约束，不复制成每项时段。
+
+**用户确认机制。** 工具只能准备提案，模型没有批准写入的工具。界面展示精确变更，用户确认后才执行；模型自由文本不能当作成功回执。一键撤销本身是用户明确授权的恢复动作。
+
+**冲突与约束校验。** 时间以 UTC 半开区间保存，按 IANA 时区显示。方案检查事件版本和硬约束，确认时再次校验。重叠安排需要显式核实共存条件，不提供强制覆盖入口。
+
+**事务与持久化。** SQLite 保存日程、对话、任务、提案和回执。`BEGIN IMMEDIATE` 与保存点保障批量原子执行，核验失败回滚；版本和幂等回执防止旧数据更新与重复确认，成功后读回核验。
+
+详细说明：[设计理由](DESIGN.md) · [技术架构](docs/ARCHITECTURE.md)。
+
+## 产品界面与演示
+
+以下中文界面截图使用合成日程，来自历史验收，不代表最新真实模型完整流程。
+
+**精简冲突面板：** 展示重叠事实、替代时间和方案选择入口；选择后先生成提案，仍需确认。截图来自历史真实模型与浏览器检查（[报告](docs/UX_TEST_2026-10-17.md)）。
+
+<img src="docs/screenshots/ux-compact-conflict.png" alt="中文冲突面板：重叠事实、替代时间与方案选择按钮" width="430">
+
+<details>
+<summary>查看任务切换与空档选择截图</summary>
+
+旧邮件请求挂起，理发任务提供空档。截图来自**脚本模型浏览器验收**，不是真实模型端到端测试（[报告](docs/CONTEXT_ISOLATION_2026-10-17.md)）。
+
+![挂起任务与理发空档候选](docs/screenshots/context-isolation-slots.png)
+
+</details>
+
+## 快速启动
+
+需要 **Python 3.12+**、Git 和 POSIX shell，以下命令适用于 macOS/Linux。运行应用无需 Node.js；完整测试另需 Node.js。
 
 ```bash
+git clone https://github.com/jsuii/schedule-agent.git
 cd schedule-agent
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]' -c requirements.lock
 ```
 
-也可用已有 Python 3.12+ Conda 环境创建 venv。`requirements.lock` 固定完整依赖，`pyproject.toml` 声明直接依赖。应用运行不依赖 Conda、AgentScope、Google Calendar 或 Docker。静态网页随 Python 包打包，无前端构建步骤。
+依赖版本已固定，静态资源随包提供，无需 npm 安装。
 
-## 无 API key 的本地演示
-
-```bash
-source .venv/bin/activate
-python -m scheduler.demo --database data/demo-01.sqlite3 --port 8001
-```
-
-打开 [离线演示](http://127.0.0.1:8001)。点击“演示下一步”依次展示：
-
-1. 缺失具体时间和时长 → 追问。
-2. 补充信息 → 待确认创建 → 点击确认，右侧出现真实记录。
-3. 查询明天的安排 → 从数据库返回。
-4. 修改地点 → 核对前后内容 → 确认修改。
-5. 同一时间写周报 → 检测冲突 → 展示可用时段，不写入周报。
-6. 创建后天的同名会议 → 确认。
-7. 取消同名会议 → 展示两条候选 → 选择卡片 → 确认删除，仅删除选中的一条。
-
-普通输入不匹配演示脚本时会明确提示；演示不是模型效果测评。重复完整演示请换一个新的 `--database` 文件名，避免与之前的真实演示记录冲突。`新对话`只清空当前会话上下文，不清空日历。默认普通数据库为 `data/calendar.sqlite3`，与演示分开。
-
-## 普通模式（当前可用模型）
-
-新克隆不包含 `.env` 或密钥；先按下节复制模板并配置自己的账户。以下用此前本地账户验证过的 DeepSeek 作为示例，通过进程环境覆盖模型；可访问性取决于账户和服务商：
+### 无 API key 的离线演示
 
 ```bash
-LLM_MODEL=deepseek/deepseek-v4.1-flash \
-LLM_ENDPOINT=https://openrouter.ai/api/v1 \
-python -m scheduler
+python -m scheduler.demo --database data/portfolio-demo-01.sqlite3 --port 8001
 ```
 
-打开 [本地应用](http://127.0.0.1:8000)。未配置模型时网页仍能启动、查看日程、显示配置提示；发送自然语言会明确返回“尚未配置”，不会创建虚假数据。
+打开 [localhost:8001](http://127.0.0.1:8001)，点击 **演示下一步**，依次体验：澄清→创建并确认→查询→修改→冲突处理→同名目标消歧与取消。工具、HTTP、用户确认和 SQLite 均为真实实现；**模型是确定性 replay 替身，不理解任意输入**。
 
-自定义本地端口：
+重复完整演示请换一个新的数据库文件名。“新对话”只重置对话上下文，不清空日历。更多场景见[演示指南](DEMO.md)。
 
-```bash
-LLM_MODEL=deepseek/deepseek-v4.1-flash \
-LLM_ENDPOINT=https://openrouter.ai/api/v1 \
-python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 8010
-```
+### 配置真实模型
 
-只使用单个进程。`Ctrl+C` 停止服务，事件和会话保留。数据库首次启动自动初始化，schema 版本为 3。
-
-## 当前可用网页启动
-
-本地8002此前以进程环境覆盖使用DeepSeek；本地 `.env` 中的Gemini曾返回403，此结果不代表其他账户的权限。密钥从根目录 `.env` 读取。下面是可复现启动命令，默认日历文件首次启动自动创建（本机既有验收进程使用独立数据库，无需清空或替换）：
-
-```sh
-LLM_MODEL=deepseek/deepseek-v4.1-flash \
-LLM_ENDPOINT=https://openrouter.ai/api/v1 \
-APP_DATABASE=data/calendar.sqlite3 \
-  .venv/bin/python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 8002
-```
-
-2026-10-17连接复核：3次合成只读请求全部HTTP200，中性推理、真实工具选择/结果回传/最终回答通过；1287 tokens，API报告US$0.000221844。不代表已经重放用户失败的创建或删除操作。
-
-## 后续真实模型配置
-
-仓库不包含OpenRouter密钥，请自行写入被忽略的 `.env`。环境变量优先级已验证，运行进程的模型ID可在网页及 `/api/health` 确认；它只代表实际加载配置，不代表每次模型请求必然成功。其他环境配置时：
+复制模板，保留已有的本地配置：
 
 ```bash
 cp -n .env.example .env
-# 在本地编辑 .env，不要把密钥粘贴进聊天、截图或提交到 Git。
 ```
 
-| 变量 | 含义 |
-|---|---|
-| `LLM_ENDPOINT` | 完整 `/v1/chat/completions` 地址，或以 `/v1` 结尾的 base URL（自动追加 `/chat/completions`） |
-| `LLM_MODEL` | provider 实际可用、支持工具调用的模型 ID |
-| `LLM_API_KEY` | 该端点对应的密钥；无认证本地服务可以为空 |
-| `APP_TIMEZONE` | IANA 时区，默认 `Asia/Shanghai` |
-| `APP_DATABASE` | SQLite 文件，默认 `data/calendar.sqlite3` |
-| `APP_CONFIG` | 可选 JSON 配置文件路径 |
+在本地编辑 `.env`。以下为最新记录的真实模型复验所用配置示例：
 
-配置文件方式：复制 `config.example.json` 为被忽略的 `config.local.json`，填写 `endpoint`、`model`、`api_key`。`api_key` 可写 `${LLM_API_KEY}` 从环境获取。优先级：系统环境 > `.env` > JSON > 默认值。配置修改后重启服务。
+```dotenv
+LLM_ENDPOINT=https://openrouter.ai/api/v1
+LLM_MODEL=deepseek/deepseek-v4.1-flash
+LLM_API_KEY=replace-with-your-own-key
+APP_TIMEZONE=Asia/Shanghai
+APP_DATABASE=data/calendar.sqlite3
+```
 
-兼容性要求：支持非流式 Chat Completions、`tools`/`tool_choice:auto`、JSON Schema 参数定义（包括 `$defs/$ref`）、assistant.function `tool_calls`、字符串 JSON arguments，以及 `role:tool`/`tool_call_id` 多轮回传。程序没有假设 Responses API、Anthropic API 或仅文本模型兼容；不兼容会明确报错，无自动“伪工具”降级。远程 endpoint 要求 HTTPS；仅 loopback 允许 HTTP；不会跟随重定向发送密钥。
-
-之后可运行真实模型验收（只发送合成测试内容，数据库为临时独立文件；会产生 provider 的正常调用费用）：
+模板中的通用占位符需要替换为自己的服务配置。模型可访问性取决于账户和地区；请勿将 `.env` 或密钥提交到 Git。
 
 ```bash
-LLM_MODEL=deepseek/deepseek-v4.1-flash \
-LLM_ENDPOINT=https://openrouter.ai/api/v1 \
+python -m scheduler
+```
+
+打开 [localhost:8000](http://127.0.0.1:8000)。首次启动自动创建数据库并迁移 schema。自定义端口：
+
+```bash
+python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 8002
+```
+
+配置优先级：**进程环境变量 > `.env` > 可选 JSON > 默认值**。JSON 方式见 [`config.example.json`](config.example.json)，本地复制为 `config.local.json` 并设置 `APP_CONFIG=config.local.json`。修改后重启；界面和 `/api/health` 显示已加载的模型 ID，不保证连通。
+
+模型端点需支持非流式 OpenAI 兼容 Chat Completions、原生工具调用、JSON Schema（含 `$defs`/`$ref`）及 `role: tool`/`tool_call_id` 多轮回传；base URL 自动补充 `/chat/completions`。远程要求 HTTPS，不兼容时明确报错。401/403检查认证权限，400/404检查协议、端点和模型。详见[架构说明](docs/ARCHITECTURE.md)。
+
+## 测试与验证
+
+最新记录基线：**2026-10-17**。覆盖率衡量代码执行范围，不代表自然语言理解准确率。
+
+| 验证类型 | 实际结果 | 覆盖范围与边界 |
+|---|---|---|
+| 离线自动化测试 | **183 passed、2 live tests skipped，覆盖率92%**；Ruff lint/format 与 JS 语法检查通过。 | 模型边界使用脚本替身和 HTTP mock；SQLite、HTTP 集成、确认、冲突、持久化、回滚及 JS 请求生命周期均执行真实实现。 |
+| Replay 演示 | 固定“演示下一步”流程及脚本模型浏览器检查。 | 验证应用流程，不评估 LLM 的语言理解能力。 |
+| 最新真实模型 smoke test | **9次 HTTP 200、55,532 reported tokens、API 报告费用 US$0.0044401388**；通过 OpenRouter 使用 DeepSeek。10次尝试中包含1次连接失败。 | 已验证基础推理、原生工具调用→结果回传→最终回答、共享时间澄清、独立任务切换和原任务快照恢复。仅用合成数据库，没有写入日历。 |
+| 完整真实模型端到端流程 | **最新一轮尚未完成**；两个既有 live pytest 未重跑。 | 时间分配澄清后的最终提案、用户确认与持久化写入、浏览器真实模型端到端流程，本轮均未验收；请求额度用完后停止调用。 |
+
+在已激活的环境运行完整**离线**门禁（需要 Node.js）：
+
+```bash
+RUN_LIVE_LLM=0 sh scripts/check.sh
+```
+
+门禁包含 pytest/覆盖率、Ruff lint/format 和 JS 语法检查。两项真实模型测试须主动开启，会发送合成数据并产生费用：
+
+```bash
+# 可选付费评估，不属于离线门禁。
 RUN_LIVE_LLM=1 python -m pytest -m live -v
 ```
 
-历史阶段这两项检查曾通过，覆盖中文相对日期、多轮补全、检索后修改及真实工具协议；本次提交前审查未执行它们，也没有调用真实模型。未来重新运行仍会产生费用，应在普通网页试跑以上演示场景，并记录具体模型/日期/效果。离线结果不能证明某个真实模型的中文理解质量或 tool-calling 兼容性。
+[最新真实复验证据](docs/PRE_SUBMIT_LIVE_2026-10-17.md) · [测试范围与历史结果](docs/TESTING.md) · [提交前检查](docs/PRE_SUBMIT_REVIEW_2026-10-17.md)。凭据、原始评估日志和数据库不纳入 Git。历史成功结果保留为历史证据，不计入最新一轮通过项。
 
-## 测试与检查
+## 已知限制与未来方向
 
-提交前另行完成[小规模真实模型复验](docs/PRE_SUBMIT_LIVE_2026-10-17.md)：9次HTTP200、55,532 tokens、US$0.0044401388；基础推理/工具闭环/任务切换恢复通过，澄清后提案因10次尝试预算用完未验证。
+- **本地、单用户、单进程。** 会话隔离的是对话和提案，不是日历数据归属。仅绑定 loopback；托管服务仍需认证和跨进程协调。
+- **模型语义判断可能出错。** 缺失时长、时间分配歧义、未核实的重叠条件仍需澄清；不猜测优先级、不自动均分共享范围，不保证任意中文输入都能正确理解。
+- **没有通知或外部同步。** 提醒请求可保留并准确说明能力限制，但尚未实现定时通知、邮件、邀请、周期事件或 Google Calendar 集成。
+- **状态与检索有界。** 提案和草稿15分钟有效，模型历史保留12个完整轮次。模糊检索基于字符相似度而非 embedding；空档搜索按15分钟步进，灵活安排目前限定12:00–18:00。没有节假日/工作日规则或长期会话自动清理。
+- **外部模型的数据边界。** 配置模型后，相关对话和检索到的日程会发送给该服务。请使用可信端点和适当测试数据；replay 演示不调用真实模型。
 
-```bash
-python -m pytest -q
-PATH="$PWD/.venv/bin:$PATH" RUN_LIVE_LLM=0 sh scripts/check.sh
-```
+未来方向：有预算约束的完整“提案→写入”真实模型评估、更强检索、数据保留策略和带认证部署；均非已实现功能。
 
-当前结果及覆盖范围见 [TESTING.md](docs/TESTING.md)，提交安全与打包检查见[提交前审查](docs/PRE_SUBMIT_REVIEW_2026-10-17.md)。当前默认183通过2跳过；多事件修复另有五句真实模型抽查，恢复修复阶段本身没有模型调用。未重跑这两项旧live。默认所有模型测试使用脚本替身或 HTTP mock，真实模型两项默认跳过；CRUD、SQLite、HTTP 接口和事务不是 mock。
+## 延伸阅读
 
-## 架构与文件
+[需求追踪](docs/REQUIREMENTS.md) · [产品设计](docs/PRODUCT_DESIGN.md) · [设计说明](DESIGN.md) · [技术架构](docs/ARCHITECTURE.md) · [演示指南](DEMO.md) · [迭代日志](AUTONOMOUS_WORK_LOG.md)
 
-```text
-scheduler/
-  provider.py       Model Protocol + OpenAI 兼容 HTTP 实现
-  agent.py          有界自主工具循环、上下文、事实回复
-  tools.py          参数 schema、候选门控、写入提案、澄清字段
-  trash.py          范围清单、7天回收站、恢复/撤销与完整批次验证
-  tasks.py          逐事件草稿、关系、窄澄清与统一方案
-  flow.py           独立任务快照、切换恢复、灵活空档与提醒边界
-  conflicts.py      冲突事实、候选方案、原请求硬约束与快照校验
-  calendar.py       时区、检索、冲突、空档、事务 CRUD 与读回
-  storage.py        持久化会话、提案、确认、幂等请求
-  app.py            FastAPI、本地会话与安全边界
-  demo.py           显式离线脚本模型替身（独立入口）
-  static/           原生 HTML / CSS / JavaScript
-```
-
-完整设计见 [DESIGN.md](DESIGN.md)、[需求追踪](docs/REQUIREMENTS.md)、[产品设计](docs/PRODUCT_DESIGN.md)、[架构](docs/ARCHITECTURE.md)、[仓库评估](docs/RESEARCH.md)。原始题目 `test.md` 未修改。
-
-## 常见问题与限制
-
-- `python` 版本太旧：使用 Python 3.12+，不要用本机 `/usr/bin/python3`。
-- 端口占用：换端口；浏览器地址也要相应修改。
-- 401/403：检查密钥和模型权限；400：检查 Chat Completions tools 支持；404：检查 endpoint/model；429：稍后重试。不会把 provider 原始响应或密钥返回前端。
-- 超时：单次 HTTP 默认30秒、整轮90秒、最多8次模型调用；同一工具连续3次同类失败会提前停止；不自动重试 HTTP 请求，避免费用与重复操作。工具参数错误返回字段路径和类型供模型修正，不回显字段值。
-- 提案失效：15分钟有效；新消息处理期间暂停旧确认；显式恢复任务才可在原期限内重新使用，修改失败不会恢复旧确认。日程版本/冲突改变时确认会拒绝，需要重新查询和提案。
-- 同名事件：先缩小查询或选候选卡片，再确认。选择只在下一模型回合内有效，重查候选变化会要求重新确认。取消某范围全部可一次准备完整清单、勾选保留后统一确认；不是逐条执行。
-- 模糊检索是字符相似度召回，不是 embedding；短词可能多召回。模型可调整关键词，写入仍需明确确认。
-- 单个事件最长7天；空档搜索最多31天、按15分钟步进返回最多5个；没有工作日/节假日规则。查询工具最多50条，截断有标记；侧栏最多500条。
-- 日期必须有具体时间；没有默认推定“一小时”；多轮相对日期以每轮当前时间为准。无偏移本地 DST 重复/不存在时间会拒绝，需明确偏移。
-- 最近12个完整轮次保留在模型上下文中；不支持无限历史。会话、请求、过期提案没有自动磁盘清理任务，长期使用需另加保留策略。
-- 本地单用户，共享同一份本地日历，随机 cookie 隔离的是对话和提案，**不是多租户数据权限**。仅绑定 loopback，不适合直接公网部署；多 worker 也不在支持范围。
-- 外部模型配置后，当前会话与检索到的日程会发送给该 endpoint；请只配置可信服务并使用合适的数据。默认不联网推理、不读取其他日历账号。
-- `.env`、本地配置、SQLite、缓存均被忽略。前端以 textContent 渲染，SQL 参数化，确认端点防跨站并检查会话，密钥不写日志。
-- 项目已发布至[GitHub公开仓库](https://github.com/jsuii/schedule-agent)，源码及README可匿名访问；现场演示仍待验收。历史修改重放通过，但旧失败缺乏原始参数，根因无法追溯；小样本通过不代表任意输入均可靠。
+历史回归与修复报告保留在 [`docs/`](docs/) 中。项目采用 [MIT 许可证](LICENSE)。
