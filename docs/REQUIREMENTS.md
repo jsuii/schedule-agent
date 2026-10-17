@@ -16,7 +16,7 @@
 | R03 原题 | endpoint/model/api_key 配置示例 | config.py、config.example.json、.env.example | test_provider 配置优先级/兼容错误 | README；离线通过 |
 | R04 原题 | 明确关键推理/匹配/冲突/检索/交互决策 | DESIGN.md | 文档人工核对 | DESIGN 全部对应六类留白点 |
 | R05 原题 | 完整前后端、依赖、启动说明 | pyproject.toml、requirements.lock、static/ | 干净 venv 安装、打包与启动检查 | README；本地通过 |
-| R06 原题 | GitHub共享仓库且对评审开放 | 待外部发布 | 未推送/未开权限 | **未完成，需单独授权与目标仓库** |
+| R06 原题 | GitHub共享仓库且对评审开放 | https://github.com/jsuii/schedule-agent | 已正常推送main；未登录浏览器可访问源码与README | **公开仓库发布通过，现场演示另行验收** |
 | R07 原题 | 现场演示 | demo.py、网页 | test_demo + 实际浏览器检查 | README 演示步骤；离线可演示，少量真实模型已联调，现场验收未完成 |
 | R08 补充 | 新建/日期区间查询/地点备注检索 | calendar.py、tools.py | test_calendar、test_demo | README；本地通过 |
 | R09 补充 | 缺信息追问、跨轮补全、修正前文 | agent.py、SQLite turns | test_multiturn_clarification_persisted_across_restart | PRODUCT_DESIGN；替身协议测试通过 |
@@ -54,7 +54,7 @@
 
 ## 验收结论边界
 
-本地应用、离线及小规模真实DeepSeek流程以TESTING和工作日志记录为准；R02已有实际调用证据，但不是任意语言输入的全面保证。**R06共享仓库发布仍未完成**，需单独授权及目标仓库。Gemini因403未通过，不隐藏失败。
+本地应用、离线及小规模真实DeepSeek流程以TESTING和工作日志记录为准；R02已有实际调用证据，但不是任意语言输入的全面保证。**R06已获授权并发布至公开GitHub仓库**，已在未登录网页核对文件列表与README。Gemini因403未通过，不隐藏失败。
 
 ## 本轮新增验收映射
 

@@ -229,3 +229,7 @@ README/TESTING/ARCHITECTURE/REQUIREMENTS/DESIGN与详细CONTEXT_ISOLATION_2026-1
 # 最终提交准备（2026-10-17，用户授权提交并推送）
 
 停止真实模型调用，不扩展功能。docs/TESTING.md补充简洁可审计的Offline/Live/Verified/Not verified/Isolation摘要，明确提案、确认写入与浏览器live链路本轮未验收。最终凭据扫描当前候选与可达历史无命中；.env、.vscode/settings.json、原始评估报告及合成SQLite均未跟踪且命中忽略，无意外删除。提交清单只含此前源码修复、配套回归、合成截图、工程文档及忽略规则。当前origin未配置，已请求用户提供目标GitHub URL；不猜测仓库或擅自创建公开仓库。远程推送和网页验收须在目标明确后实际执行，不能提前宣称完成。
+
+# GitHub发布（2026-10-17）
+
+用户提供https://github.com/jsuii/schedule-agent并明确授权推送。远程main原仅有MIT LICENSE初始提交e54b39c，与本地历史独立；普通merge --allow-unrelated-histories生成ae06c68，保留双方历史及原LICENSE。合并后完整门禁183通过2跳过、覆盖率92%、Ruff/format/JS通过；候选与可达Git对象凭据扫描无命中，.env未跟踪。HTTPS因本机无对应凭据失败，未更改远端；已有SSH身份访问成功，origin切换同仓库SSH地址，普通push -u origin main成功，无force。未登录浏览器已验证Public标记、docs/scheduler/scripts/tests文件列表、README渲染及安装/配置/测试说明。README及R06更新发布状态；真实提案/确认写入和浏览器live链路本轮未验收的边界保留。本轮API请求0，无密钥或原始数据提交。
