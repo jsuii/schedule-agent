@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import json
+from typing import Literal
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -11,6 +13,9 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+CORE = {"title", "start", "end", "location", "notes"}
 
 
 class CalendarError(ValueError):
@@ -26,6 +31,16 @@ class EventInput(BaseModel):
     end: str
     location: str = Field(default="", max_length=500)
     notes: str = Field(default="", max_length=2000)
+
+    importance: Literal["unknown", "high", "medium", "low"] = "unknown"
+    flexibility: Literal["unknown", "fixed", "movable", "shortenable", "splittable"] = "unknown"
+    interruptibility: Literal[
+        "unknown", "noninterruptible", "pausable", "resumable", "parallel"
+    ] = "unknown"
+    keep_time: bool = False
+    minimum_minutes: int = Field(default=1, ge=1, le=10080)
+    overlap_allowed: bool = False
+    coexistence_verified: bool = False
 
     @field_validator("title")
     @classmethod
@@ -48,6 +63,10 @@ class Calendar:
                     notes TEXT NOT NULL, version INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS events_time ON events(start, end);
             """)
+
+            columns = {r["name"] for r in conn.execute("PRAGMA table_info(events)")}
+            if "attributes" not in columns:
+                conn.execute("ALTER TABLE events ADD COLUMN attributes TEXT NOT NULL DEFAULT '{}'")
 
     @contextmanager
     def connect(self):
@@ -98,13 +117,16 @@ class Calendar:
         if row is None:
             return None
         result = dict(row)
+        attributes = json.loads(result.pop("attributes", "{}"))
+        defaults = EventInput(title=result["title"], start="", end="").model_dump()
+        result.update({k: attributes.get(k, v) for k, v in defaults.items() if k not in CORE})
         result["start"], result["end"] = self.iso(row["start"]), self.iso(row["end"])
         return result
 
     def validate(self, payload: dict) -> dict:
         data = EventInput.model_validate(payload).model_dump()
         start, end = self.timestamp(data["start"]), self.timestamp(data["end"])
-        if end <= start or end - start > 7 * 86400:
+        if end <= start or end - start > 7 * 86400 or end - start < data["minimum_minutes"] * 60:
             raise CalendarError("invalid_duration", hint="结束须晚于开始，最长7天")
         return {**data, "start": start, "end": end}
 
@@ -175,16 +197,20 @@ class Calendar:
             if self.get(event_id, conn) is not None:
                 raise CalendarError("verification_failed")
             return old
-        merged = {k: old[k] for k in ["title", "start", "end", "location", "notes"]} if old else {}
+        merged = {k: old[k] for k in EventInput.model_fields} if old else {}
         merged.update(payload)
         data = self.validate(merged)
         conflicts = self.conflicts(self.iso(data["start"]), self.iso(data["end"]), event_id, conn)
+        candidate = {**data, "start": self.iso(data["start"]), "end": self.iso(data["end"])}
+        conflicts = [e for e in conflicts if not self.compatible(candidate, e)]
+        if old:
+            self.check_constraints(old, candidate)
         if conflicts:
             raise CalendarError("conflict", events=conflicts)
         if action == "create":
             event_id = uuid4().hex
             conn.execute(
-                "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, 1)",
+                "INSERT INTO events(id,title,start,end,location,notes,version,attributes) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
                 (
                     event_id,
                     data["title"],
@@ -192,17 +218,19 @@ class Calendar:
                     data["end"],
                     data["location"],
                     data["notes"],
+                    json.dumps({k: v for k, v in data.items() if k not in CORE}),
                 ),
             )
         else:
             conn.execute(
-                "UPDATE events SET title=?, start=?, end=?, location=?, notes=?, version=version+1 WHERE id=? AND version=?",
+                "UPDATE events SET title=?, start=?, end=?, location=?, notes=?, attributes=?, version=version+1 WHERE id=? AND version=?",
                 (
                     data["title"],
                     data["start"],
                     data["end"],
                     data["location"],
                     data["notes"],
+                    json.dumps({k: v for k, v in data.items() if k not in CORE}),
                     event_id,
                     version,
                 ),
@@ -235,3 +263,116 @@ class Calendar:
                 found.append({"start": self.iso(current), "end": self.iso(finish)})
             current += 15 * 60
         return found
+
+    def compatible(self, a, b):
+        """Explicit same-location, attention/travel consent; titles never authorize overlap."""
+        if not all(e.get("overlap_allowed") and e.get("coexistence_verified") for e in (a, b)):
+            return False
+        if not a.get("location") or a["location"] != b.get("location"):
+            return False
+        if any(e.get("interruptibility") == "parallel" for e in (a, b)):
+            return True
+        for outer, inner in ((a, b), (b, a)):
+            if (
+                outer.get("interruptibility") in ("pausable", "resumable")
+                and self.timestamp(outer["start"]) <= self.timestamp(inner["start"])
+                and self.timestamp(outer["end"]) >= self.timestamp(inner["end"])
+            ):
+                return True
+        return False
+
+    def check_constraints(self, before, after):
+        changed = any(
+            self.timestamp(before[k]) != self.timestamp(after[k]) for k in ("start", "end")
+        )
+        if changed and (before.get("keep_time") or before.get("flexibility") == "fixed"):
+            raise CalendarError(
+                "hard_constraint", hint="目标有固定时间/必须保留约束，请先明确解除约束"
+            )
+        if changed and before.get("flexibility") == "shortenable":
+            if self.timestamp(after["start"]) != self.timestamp(before["start"]) or self.timestamp(
+                after["end"]
+            ) > self.timestamp(before["end"]):
+                raise CalendarError("hard_constraint", hint="此事件仅允许缩短")
+        if (
+            self.timestamp(after["end"]) - self.timestamp(after["start"])
+            < before.get("minimum_minutes", 1) * 60
+        ):
+            raise CalendarError("hard_constraint", hint="低于原事件最短时长")
+
+    def prepare_batch(self, changes, conn=None):
+        if conn is None:
+            with self.transaction() as db:
+                return self.prepare_batch(changes, db)
+        prepared, ids = [], set()
+        for change in changes:
+            action = change["action"]
+            before = None
+            if action == "update":
+                target = change["event_id"]
+                if target in ids:
+                    raise CalendarError("duplicate_target")
+                ids.add(target)
+                before = self.get(target, conn)
+                if not before or before["version"] != change["version"]:
+                    raise CalendarError("stale", hint="方案中的日程已变化，请重新分析")
+                payload = {k: before[k] for k in EventInput.model_fields}
+                payload.update(change["patch"])
+            elif action == "create":
+                payload = change["event"]
+            else:
+                raise CalendarError("invalid_action")
+            data = self.validate(payload)
+            after = {**data, "start": self.iso(data["start"]), "end": self.iso(data["end"])}
+            if before:
+                self.check_constraints(before, after)
+            prepared.append({"action": action, "before": before, "after": after})
+        existing = [
+            self.serialize(r) for r in conn.execute("SELECT * FROM events") if r["id"] not in ids
+        ]
+        final = existing + [p["after"] for p in prepared]
+        # Existing-existing overlaps need not be re-authorized; every touched pair is checked.
+        for i in range(len(existing), len(final)):
+            a = final[i]
+            for b in final[:i]:
+                if (
+                    self.timestamp(a["start"]) < self.timestamp(b["end"])
+                    and self.timestamp(a["end"]) > self.timestamp(b["start"])
+                    and not self.compatible(a, b)
+                ):
+                    raise CalendarError("conflict", events=[b], hint="组合的最终状态仍有冲突")
+        return prepared
+
+    def apply_batch(self, changes, conn):
+        prepared = self.prepare_batch(changes, conn)
+        # Remove all changed originals before inserting final rows: swaps have no transient conflict.
+        for item in prepared:
+            if item["before"]:
+                conn.execute(
+                    "DELETE FROM events WHERE id=? AND version=?",
+                    (item["before"]["id"], item["before"]["version"]),
+                )
+        expected = []
+        for item in prepared:
+            old, after = item["before"], item["after"]
+            target = old["id"] if old else uuid4().hex
+            version = old["version"] + 1 if old else 1
+            data = self.validate(after)
+            conn.execute(
+                "INSERT INTO events(id,title,start,end,location,notes,version,attributes) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    target,
+                    data["title"],
+                    data["start"],
+                    data["end"],
+                    data["location"],
+                    data["notes"],
+                    version,
+                    json.dumps({k: v for k, v in data.items() if k not in CORE}),
+                ),
+            )
+            expected.append({**after, "id": target, "version": version})
+        actual = [self.get(e["id"], conn) for e in expected]
+        if actual != expected:
+            raise CalendarError("verification_failed")
+        return actual

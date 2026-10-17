@@ -40,6 +40,16 @@ class Patch(Arguments):
     location: str | None = Field(default=None, max_length=500)
     notes: str | None = Field(default=None, max_length=2000)
 
+    importance: Literal["unknown", "high", "medium", "low"] | None = None
+    flexibility: Literal["unknown", "fixed", "movable", "shortenable", "splittable"] | None = None
+    interruptibility: (
+        Literal["unknown", "noninterruptible", "pausable", "resumable", "parallel"] | None
+    ) = None
+    keep_time: bool | None = None
+    minimum_minutes: int | None = Field(default=None, ge=1, le=10080)
+    overlap_allowed: bool | None = None
+    coexistence_verified: bool | None = None
+
     @model_validator(mode="after")
     def nonempty(self):
         if not self.model_dump(exclude_none=True):
@@ -52,11 +62,46 @@ class Update(Arguments):
     patch: Patch
 
 
+class Change(Arguments):
+    action: Literal["create", "update"]
+    event: EventInput | None = None
+    event_id: str | None = Field(default=None, min_length=1, max_length=64)
+    version: int | None = Field(default=None, ge=1)
+    patch: Patch | None = None
+
+    @model_validator(mode="after")
+    def shape(self):
+        if self.action == "create":
+            if (
+                self.event is None
+                or self.event_id is not None
+                or self.version is not None
+                or self.patch is not None
+            ):
+                raise ValueError("create 仅使用 event；title/start/end 必填")
+        elif (
+            self.event is not None
+            or self.event_id is None
+            or self.version is None
+            or self.patch is None
+        ):
+            raise ValueError("update 使用 event_id、整数 version 与嵌套 patch；不需要完整 event")
+        return self
+
+
+class Resolution(Arguments):
+    changes: list[Change] = Field(min_length=1, max_length=8)
+
+
 class Delete(Arguments):
     event_id: str
 
 
 TOOLS = {
+    "propose_resolution": (
+        Resolution,
+        "统一提出多个创建/修改，最终状态整体校验。changes 数组：create 用 event(title/start/end...)；update 用 event_id、整数 version、嵌套 patch(仅变更字段)。ID/version 必须来自本会话观测或当前冲突上下文。保留当前冲突中的新事件时必须包含 create，不得漏掉。不直接写入。",
+    ),
     "search_events": (
         Search,
         "检索真实日程，按开始时间排序。query 支持标题、地点、备注子串及模糊匹配；可用 ISO start/end 限制范围（半开区间）。最多返回50条，有截断标记；修改/删除前必须调用。",
@@ -117,7 +162,7 @@ class Tools:
         except ValidationError as exc:
             return {
                 "error": "invalid_arguments",
-                "hint": "参数不符合工具 schema；请补全信息或修正，不要猜测",
+                "hint": "参数不符合工具 schema；propose_update 使用 {event_id, patch:{变更字段}}；propose_resolution 的 update 还需要整数 version。不要猜测 ID 或缺失信息",
                 "issues": [
                     {"path": ".".join(str(p) for p in e["loc"])[:200], "type": e["type"]}
                     for e in exc.errors(
@@ -138,6 +183,62 @@ class Tools:
             return {"error": "invalid_arguments", "hint": "日期、时长或字段无效，请向用户核实"}
 
     def _execute(self, name, value):
+        if name == "propose_resolution":
+            from scheduler.conflicts import validate_case, validate_resolution
+
+            case = self.state.get("conflict")
+            if case:
+                validate_case(self.store, case)
+            observed = self.state.get("candidates", []) + (case["snapshots"] if case else [])
+            changes = value.model_dump(exclude_none=True)["changes"]
+            for change in changes:
+                if change["action"] == "update" and not any(
+                    e["id"] == change["event_id"] and e["version"] == change["version"]
+                    for e in observed
+                ):
+                    raise CalendarError(
+                        "not_observed", hint="ID 与整数版本必须来自当前检索或冲突上下文"
+                    )
+            if case:
+                validate_resolution(self.store, case, changes)
+            try:
+                self.cal.prepare_batch(changes)
+            except CalendarError as exc:
+                if exc.code == "conflict" and len(changes) == 1:
+                    from scheduler.conflicts import analyze
+
+                    change = changes[0]
+                    before = (
+                        self.cal.get(change["event_id"]) if change["action"] == "update" else None
+                    )
+                    requested = (
+                        {**{k: before[k] for k in EventInput.model_fields}, **change["patch"]}
+                        if before
+                        else change["event"]
+                    )
+                    normalized = self.cal.validate(requested)
+                    requested = {
+                        **normalized,
+                        "start": self.cal.iso(normalized["start"]),
+                        "end": self.cal.iso(normalized["end"]),
+                    }
+                    case = analyze(self.store, self.sid, requested, before)
+                    self.state["conflict"] = case
+                    self.last_slots = []
+                    raise CalendarError(
+                        "conflict",
+                        events=exc.details.get("events", []),
+                        conflict=case,
+                        alternatives=[],
+                        hint="请从冲突面板选择方案或使用自定义调整；尚未修改日程",
+                    ) from exc
+                raise
+            return {
+                "proposal": self.store.propose(
+                    self.sid, "batch", {"changes": changes, "context": case}
+                )
+            }
+
         if name == "ask_user":
             if "alternative" in value.fields and self.last_slots is None:
                 return {
@@ -165,7 +266,12 @@ class Tools:
                         "指定时间与以下日程冲突：\n"
                         + "\n".join(describe(e) for e in self.last_conflicts)
                     )
-                parts.append(describe_slots(self.last_slots))
+                if self.state.get("conflict"):
+                    parts.append(
+                        "请查看冲突面板的已校验方案；若需保留重叠，请明确可暂停性、地点、注意力和通勤条件。"
+                    )
+                else:
+                    parts.append(describe_slots(self.last_slots))
                 parts.append("你希望采用哪个时段，或另选什么时间？日程尚未改变。")
             if "scope" in value.fields:
                 parts.append(
@@ -179,6 +285,7 @@ class Tools:
                 (e for e in self.state.get("candidates", []) if e["id"] == selected), None
             )
             self.state = {
+                **({"conflict": self.state["conflict"]} if self.state.get("conflict") else {}),
                 "candidates": events[:50],
                 "truncated": len(events) > 50,
                 "search": value.model_dump(),
@@ -221,7 +328,7 @@ class Tools:
             actual = self.cal.get(value.event_id)
             if actual is None or actual["version"] != before["version"]:
                 raise CalendarError("stale")
-            payload = {k: before[k] for k in ["title", "start", "end", "location", "notes"]}
+            payload = {k: before[k] for k in EventInput.model_fields}
             if name == "propose_update":
                 patch = value.patch.model_dump(exclude_none=True)
                 if "start" in patch and "end" not in patch:
@@ -231,6 +338,28 @@ class Tools:
                     patch["end"] = self.cal.iso(self.cal.timestamp(patch["start"]) + duration)
                 payload.update(patch)
         if name != "propose_delete":
+            case = self.state.get("conflict")
+            if case and (
+                (before and case.get("before") and before["id"] == case["before"]["id"])
+                or (
+                    not before
+                    and not case.get("before")
+                    and payload["title"] == case["requested"]["title"]
+                )
+            ):
+                from scheduler.conflicts import validate_resolution
+
+                change = (
+                    {
+                        "action": "update",
+                        "event_id": before["id"],
+                        "version": before["version"],
+                        "patch": payload,
+                    }
+                    if before
+                    else {"action": "create", "event": payload}
+                )
+                validate_resolution(self.store, case, [change])
             normalized = self.cal.validate(payload)
             payload = {
                 **normalized,
@@ -240,6 +369,9 @@ class Tools:
             conflicts = self.cal.conflicts(
                 payload["start"], payload["end"], before["id"] if before else None
             )
+            conflicts = [e for e in conflicts if not self.cal.compatible(payload, e)]
+            if before:
+                self.cal.check_constraints(before, payload)
             if conflicts:
                 stop = self.cal.iso(self.cal.timestamp(payload["start"]) + 86400)
                 duration = max(5, (normalized["end"] - normalized["start"]) // 60)
@@ -250,8 +382,13 @@ class Tools:
                     if duration <= 1440
                     else []
                 )
+                from scheduler.conflicts import analyze
+
+                case = analyze(self.store, self.sid, payload, before)
+                self.state["conflict"] = case
                 raise CalendarError(
                     "conflict",
+                    conflict=case,
                     events=conflicts,
                     alternatives=alternatives,
                     hint="不要自动改动用户指定时间；解释冲突并询问替代时段",

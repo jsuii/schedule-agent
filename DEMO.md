@@ -75,3 +75,33 @@ sh scripts/check.sh
 本轮评估记录`data/sprint-20261017/report.json`包含23次请求的synthetic工具参数、结果、用量和失败，受Git忽略。`scripts/evaluate_live.py`是针对本轮的有预算驱动，不会自动重跑已记录场景；`scripts/serve_validation.py`是同一create_app的观测封装。普通网页不使用这些测试替身或脚本路由，也不受评估账本的剩余额度限制。
 
 再次付费评估前应明确新预算、保留原失败证据，并选取真正需要复验的场景。不要删除账本来绕过本轮上限。
+
+## 新增：智能冲突工作流演示
+
+本轮验收网页在 http://127.0.0.1:8002/ ，当前合成结果为宠物13–15:30、面试16–18。它使用真实DeepSeek，发送消息会产生费用；浏览器确认/取消/选择方案本身不请求LLM。
+
+重做原始场景请用新的合成数据库，避免误改普通开发记录。以下命令在项目根目录执行（已有8002进程可保留，演示使用8003）：
+
+```bash
+source .venv/bin/activate
+python - <<'PY'
+from scheduler.storage import Store
+from scripts.evaluate_conflicts import event
+s = Store('data/conflict-demo-01.sqlite3', 'Asia/Shanghai')
+if not s.calendar.search():
+    s.calendar.create(event('合成宠物检查', '13:00', '17:00'))
+PY
+LLM_MODEL=deepseek/deepseek-v4.1-flash \
+LLM_ENDPOINT=https://openrouter.ai/api/v1 \
+APP_DATABASE=data/conflict-demo-01.sqlite3 \
+python -m uvicorn scheduler.app:create_app --factory --host 127.0.0.1 --port 8003
+```
+
+1. 打开 http://127.0.0.1:8003/ ，输入“安排2026年10月19日16:00–18:00的合成面试”。
+2. 核对宠物/面试卡片、16–17重叠、尚未修改状态、少量方案及假设。明确时间固定会减少可选方案数量。
+3. 点击方案，核对统一前后对照；取消，面板仍保留且没有改日程。
+4. 自定义框输入“面试保持16:00–18:00，合成宠物检查改为13:00–15:30，请将面试新增和宠物检查修改作为一次统一提案”，按Enter。
+5. 核对两项后确认；看到原子提交回执，右侧宠物13–15:30、面试16–18。刷新/重启同数据库仍保留。
+6. 暂停嵌套可另起新的合成库：先建19日11–16大扫除，再安排12–12:30寄快递。未知可暂停性应先澄清。明确双方在家、快递上门无需通勤、注意力可兼顾、允许重叠且大扫除可暂停恢复后，提交属性更新＋新增的统一提案。
+
+A–H包括故障/过期/回滚可不花API费用复现：`RUN_LIVE_LLM=0 python -m pytest tests/test_conflicts.py -v`。模型有非确定性，真实测试失败轨迹及边界见[冲突验收](docs/CONFLICT_TEST_2026-10-17.md)。新对话只清上下文，不清日历；重做请改用新的demo数据库文件名。

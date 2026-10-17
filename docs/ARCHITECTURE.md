@@ -1,6 +1,6 @@
 # 技术架构
 
-> 当前验证：默认72通过、2个live跳过；两项live已另行真实通过。DeepSeek真实补全、修改、消歧删除和冲突替代通过；详细证据、失败及限制见[工作日志](../AUTONOMOUS_WORK_LOG.md)。
+> 当前冲突轮验证：96通过、2个live默认跳过，覆盖率94%；真实DeepSeek共25次（包含失败）、$0.0218568444。详情见[冲突验收](CONFLICT_TEST_2026-10-17.md)。
 ## 技术选择
 
 Python 3.12、FastAPI、Pydantic、HTTPX、SQLite、原生 HTML/CSS/JS。一个进程即可启动，静态资源随 wheel 包分发。仓库/AgentScope/Dify 的实际源码与适配比较见 [RESEARCH.md](RESEARCH.md)。没有复制第三方项目的实现代码，也没有将原始任务文档中的外部发布要求当作当前推送授权。
@@ -106,3 +106,15 @@ System Prompt把日程标题备注视为数据；即使模型被内容诱导，�
 真实SQLite单元测试、HTTP集成、脚本模型观察循环测试、provider MockTransport协议测试、单独默认跳过的真实LLM评估、浏览器实测、干净安装及wheel检查。详见TESTING。替身不能证明真实中文效果，不能将测试覆盖率等同自然语言准确率。
 
 未来可加入更精细中文检索、大数据分页、数据保留清理、用户认证和跨进程会话锁、周期模型以及真实provider评估集；这些不是本轮本地MVP的前置依赖。
+
+## 智能冲突解决扩展
+
+`conflicts.py`独立计算逐对UTC半开区间交集，记录完整事件、版本与时区；生成前后移动、顺延全部冲突、明确可缩短时的缩短方案。每个方案经过`prepare_batch`最终集合验证，再按用户明确重要性加权变动代价与修改数排序。未知重要性不从标题推断。方案持久化session.state.conflict，UUID方案ID、15分钟过期、相关版本快照。
+
+事件新增attributes JSON列（幂等迁移、默认{}；读取补默认），schema版本2。importance/flexibility/interruptibility默认unknown，keep_time/overlap_allowed/coexistence_verified默认false，minimum_minutes默认1。fixed/keep_time和原最短时长是硬约束。原单条CRUD/API继续工作。
+
+第七个工具`propose_resolution(changes)`：create使用event；update使用event_id、version、patch。ID/version必须来自检索或当前冲突快照。原请求绑定校验在分析替换前、提案前及确认事务内执行；修改按真实before+patch校验，不能遗漏或替换原请求硬时间。
+
+`POST /api/plans/{id}`查本会话稳定方案、过期和快照，重新验证后生成batch提案，无模型调用且不写日程。`/api/state`包含冲突面板上下文。自定义文本仍走原Agent工具循环。
+
+确认事务BEGIN IMMEDIATE内验证目标版本、原请求硬约束及全部变更终态/外部现有事件，移除所有被修改旧行后写入最终行，读回全部字段与版本。保存点覆盖所有变更，SQLite故障或核验失败整体回滚且保存失败回执；重复确认同回执。取消保留冲突上下文以便另选，成功或失败后清理旧状态。

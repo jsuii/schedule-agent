@@ -139,6 +139,7 @@ def create_app(settings=None, model=None, *, demo=False):
             "history": history,
             "events_truncated": len(store.calendar.search(limit=501)) > 500,
             "proposal": store.pending(sid),
+            "conflict": session["state"].get("conflict"),
             "candidates": session["state"].get("candidates", []),
             "timezone": settings.timezone,
             "model_configured": bool(settings.model.strip()),
@@ -167,6 +168,13 @@ def create_app(settings=None, model=None, *, demo=False):
         if locks[sid].locked():
             raise HTTPException(409, "助手正在处理，请稍候再确认。")
         return store.confirm(sid, proposal_id, body.approve)
+
+    @app.post("/api/plans/{plan_id}")
+    async def choose_plan(plan_id: str, request: Request):
+        sid = request.state.sid
+        if locks[sid].locked():
+            raise HTTPException(409, "助手正在处理，请稍候再选择方案。")
+        return {"status": "proposal", "proposal": store.choose_plan(sid, plan_id)}
 
     @app.post("/api/select")
     async def select(body: Selection, request: Request):

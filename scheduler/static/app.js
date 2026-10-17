@@ -19,7 +19,9 @@ function stamp(iso) {
   return new Intl.DateTimeFormat('zh-CN',{timeZone:current?.timezone||'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d);
 }
 function dateKey(iso) { return new Intl.DateTimeFormat('en-CA',{timeZone:current?.timezone||'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(iso)); }
-function detail(e) { return `${e.title}\n${stamp(e.start)} → ${stamp(e.end)}\n地点：${e.location||'未填写'}${e.notes?'\n备注：'+e.notes:''}`; }
+const constraintNames={unknown:'未说明',high:'高',medium:'中',low:'低',fixed:'固定',movable:'可移动',shortenable:'可缩短',splittable:'可拆分',noninterruptible:'不可打断',pausable:'可暂停',resumable:'可暂停恢复',parallel:'可并行'};
+function constraint(value){return constraintNames[value]||'未说明';}
+function detail(e) { return `${e.title}\n${stamp(e.start)} → ${stamp(e.end)}\n地点：${e.location||'未填写'}${e.notes?'\n备注：'+e.notes:''}\n约束：重要性 ${constraint(e.importance)} / 时间 ${constraint(e.flexibility)} / 可打断性 ${constraint(e.interruptibility)}${e.keep_time?' / 必须保留时间':''}${e.overlap_allowed?' / 已允许重叠':''}${e.coexistence_verified?' / 注意力与通勤已核实':''}`; }
 function renderEvents() {
   const root=$('#events'), selected=$('#date').value;
   root.replaceChildren();
@@ -32,12 +34,26 @@ function renderEvents() {
 function renderProposal(p) {
   const root=$('#proposal');root.replaceChildren();root.hidden=!p;if(!p)return;
   const card=el('section',undefined,'proposal');
-  card.append(el('h3',`${({create:'添加',update:'修改',delete:'删除'})[p.action]}日程 · 等待你的确认`));
+  card.append(el('h3',`${({create:'添加',update:'修改',delete:'删除',batch:'统一调整'})[p.action]}日程 · 等待你的确认`));
   if(p.before && p.action==='update')card.append(el('pre','原日程\n'+detail(p.before)));
-  card.append(el('pre',(p.action==='update'?'修改为\n':'')+detail(p.event)),el('p','确认后才会写入；15分钟内有效。'));
-  const actions=el('div',undefined,'actions'),yes=el('button','确认'+({create:'添加',update:'修改',delete:'删除'})[p.action],'primary'),no=el('button','取消','secondary');
+  if(p.action==='batch'){for(const item of p.event.preview){if(item.before)card.append(el('pre','原安排\n'+detail(item.before)));card.append(el('pre','调整后\n'+detail(item.after)));}card.append(el('p','统一确认后原子执行；仅本地日历，外部预约未同步。'));}
+  else card.append(el('pre',(p.action==='update'?'修改为\n':'')+detail(p.event)),el('p','确认后才会写入；15分钟内有效。'));
+  const actions=el('div',undefined,'actions'),yes=el('button','确认'+({create:'添加',update:'修改',delete:'删除',batch:'统一调整'})[p.action],'primary'),no=el('button','取消','secondary');
   for(const [b,approve] of [[yes,true],[no,false]]){b.disabled=busy;b.onclick=async()=>{if(busy)return;setBusy(true);try{const r=await api('/api/proposals/'+p.id,{approve});message('assistant',r.message,r.status==='error');await refresh();}catch(e){message('assistant',e.message,true);await refresh();}finally{setBusy(false);}};actions.append(b);}
   card.append(actions);root.append(card);
+}
+function renderConflict(c) {
+  const root=$('#conflict');root.replaceChildren();root.hidden=!c||!!current?.proposal;if(root.hidden)return;
+  const panel=el('section',undefined,'conflict-panel');panel.append(el('h3','安排有重叠 · 尚未修改日程'),el('p','时区：'+c.timezone+' · 方案15分钟有效'));
+  const shown=new Set();
+  for(const f of c.facts){for(const e of [f.requested,f.existing]){const key=e.id||'requested';if(!shown.has(key)){panel.append(el('pre',detail(e)));shown.add(key);}}
+    panel.append(el('p','重叠：'+stamp(f.overlap.start)+' → '+stamp(f.overlap.end),'overlap'),el('p',f.question));}
+  for(const p of c.plans){const box=el('article',undefined,'resolution-plan');box.append(el('h4',(p.recommended?'推荐 · ':'')+p.title),el('p',p.reason));
+    for(const e of p.events)box.append(el('pre',(e.before?'原：'+detail(e.before)+'\n改为：':'新增：')+detail(e.after)));
+    box.append(el('p','已验证硬约束 · 无剩余冲突 · 等待确认'),el('p',p.assumptions.join(' ')));
+    const b=el('button','选择此方案','secondary');b.disabled=busy;b.onclick=async()=>{if(busy)return;setBusy(true);try{await api('/api/plans/'+p.id,{});message('assistant','已准备统一提案，尚未修改日程。');await refresh();}catch(e){message('assistant',e.message,true);await refresh();}finally{setBusy(false);}};box.append(b);panel.append(box);}
+  if(!c.plans.length)panel.append(el('p','现有硬约束下没有已验证的方案，请补充可调整条件。'));
+  const form=el('form',undefined,'conflict-custom'),input=el('input'),button=el('button','提交自定义调整','primary');input.type='text';input.required=true;input.maxLength=4000;input.placeholder='例如：面试不动，宠物检查改为13:00–15:30';input.setAttribute('aria-label','自定义冲突解决方案');input.disabled=busy;button.disabled=busy;form.append(input,button);form.onsubmit=e=>{e.preventDefault();sendText(input.value);};panel.append(form);root.append(panel);
 }
 function renderCandidates(list, visible) {
   const root=$('#candidates');root.replaceChildren();root.hidden=!visible||list.length<2;if(root.hidden)return;
@@ -60,9 +76,9 @@ async function refresh(initial=false) {
     const b=el('button',demoIndex<demoPrompts.length?'演示下一步：'+demoPrompts[demoIndex]:'演示步骤已结束');b.id='demo-next';b.disabled=demoIndex>=demoPrompts.length||busy||!!current.proposal;b.onclick=()=>sendText(demoPrompts[demoIndex++]);notice.append(b);
   }else if(!current.model_configured)notice.textContent='尚未配置真实模型。网页与本地日历已就绪；配置 .env 后重启即可使用自然语言，或按 README 启动独立的固定脚本演示。';
   if(initial){$('#messages').replaceChildren();for(const m of current.history)message(m.role,m.content);}
-  renderEvents();renderProposal(current.proposal);renderCandidates(current.candidates,current.candidates.length>1&&!current.proposal);
+  renderEvents();renderConflict(current.conflict);renderProposal(current.proposal);renderCandidates(current.candidates,current.candidates.length>1&&!current.proposal);
 }
-function setBusy(value){busy=value;$('#send').disabled=value;$('#new-chat').disabled=value;$('#input').disabled=value;$('#processing').textContent=value?'正在处理，请稍候…':'Enter 发送 · Shift + Enter 换行';document.querySelectorAll('#proposal button,#candidates button').forEach(b=>b.disabled=value);if($('#demo-next'))$('#demo-next').disabled=value||demoIndex>=demoPrompts.length||!!current?.proposal;}
+function setBusy(value){busy=value;$('#send').disabled=value;$('#new-chat').disabled=value;$('#input').disabled=value;$('#processing').textContent=value?'正在处理，请稍候…':'Enter 发送 · Shift + Enter 换行';document.querySelectorAll('#proposal button,#candidates button,#conflict button,#conflict input').forEach(b=>b.disabled=value);if($('#demo-next'))$('#demo-next').disabled=value||demoIndex>=demoPrompts.length||!!current?.proposal;}
 async function sendText(text) {
   text=text?.trim();if(!text||busy)return;
   message('user',text);$('#input').value='';setBusy(true);$('#candidates').hidden=true;

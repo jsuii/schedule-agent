@@ -264,7 +264,9 @@ def test_correction_supersedes_pending_proposal_without_writing(tmp_path):
     updated = {**event(), "start": "2026-10-18T16:00:00+08:00", "end": "2026-10-18T17:00:00+08:00"}
     model = ScriptedModel(call("propose_create", **updated))
     corrected = asyncio.run(Agent(store, model, Settings()).run(sid, "改到下午4点，其他不变"))
-    assert corrected["proposal"]["event"] == updated | {"notes": ""}
+    from scheduler.calendar import EventInput
+
+    assert corrected["proposal"]["event"] == EventInput(**updated).model_dump()
     assert any("明天下午3点" in str(m) for m in model.messages[0])
     with pytest.raises(CalendarError, match="proposal_expired"):
         store.confirm(sid, first["proposal"]["id"], True)

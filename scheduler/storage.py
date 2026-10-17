@@ -2,6 +2,7 @@
 
 import json
 import secrets
+import sqlite3
 import time
 from uuid import uuid4
 
@@ -25,7 +26,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS requests (
                     session_id TEXT NOT NULL, id TEXT NOT NULL, result TEXT,
                     PRIMARY KEY(session_id,id));
-                PRAGMA user_version=1;
+                PRAGMA user_version=2;
             """)
 
     def new_session(self):
@@ -72,6 +73,12 @@ class Store:
             )
 
     def propose(self, sid, action, payload, before=None):
+        if action == "batch":
+            from scheduler.conflicts import validate_resolution
+
+            if payload.get("context"):
+                validate_resolution(self, payload["context"], payload["changes"])
+            payload = {**payload, "preview": self.calendar.prepare_batch(payload["changes"])}
         self.invalidate(sid)
         proposal_id = uuid4().hex
         expires = time.time() + 15 * 60
@@ -129,7 +136,14 @@ class Store:
                 conn.execute("SAVEPOINT calendar_write")
                 try:
                     payload = json.loads(row["payload"])
-                    if row["action"] == "create":
+                    if row["action"] == "batch":
+                        from scheduler.conflicts import validate_resolution
+
+                        if payload.get("context"):
+                            validate_resolution(self, payload["context"], payload["changes"], conn)
+                        events = self.calendar.apply_batch(payload["changes"], conn)
+                        event = {"changes": events}
+                    elif row["action"] == "create":
                         event = self.calendar.create(payload, conn=conn)
                     elif row["action"] == "update":
                         event = self.calendar.update(
@@ -137,15 +151,26 @@ class Store:
                         )
                     else:
                         event = self.calendar.delete(row["event_id"], row["version"], conn=conn)
-                    verb = {"create": "添加", "update": "修改", "delete": "删除"}[row["action"]]
+                    verb = {
+                        "create": "添加",
+                        "update": "修改",
+                        "delete": "删除",
+                        "batch": "统一调整",
+                    }[row["action"]]
                     result = {
                         "status": "committed",
                         "action": row["action"],
                         "event": event,
-                        "message": f"已{verb}并核验日程：{describe(event)}。",
+                        "message": (
+                            "已原子执行并读回核验全部调整：\n"
+                            + "\n".join(describe(e) for e in events)
+                            + "\n仅修改本地日历，未同步任何外部预约。"
+                        )
+                        if row["action"] == "batch"
+                        else f"已{verb}并核验日程：{describe(event)}。",
                     }
                     conn.execute("RELEASE calendar_write")
-                except CalendarError as exc:
+                except (CalendarError, sqlite3.Error) as exc:
                     # Keep a durable failed receipt, but never commit a mutation whose
                     # verification failed. Catching inside the outer transaction alone
                     # would otherwise commit the INSERT/UPDATE/DELETE along with it.
@@ -153,11 +178,12 @@ class Store:
                     conn.execute("RELEASE calendar_write")
                     result = {
                         "status": "error",
-                        "error": exc.code,
-                        "details": exc.details,
+                        "error": exc.code if isinstance(exc, CalendarError) else "storage_failure",
+                        "details": exc.details if isinstance(exc, CalendarError) else {},
                         "message": (
                             "状态核验失败，本次操作已回滚，请重新查询。"
-                            if exc.code == "verification_failed"
+                            if not isinstance(exc, CalendarError)
+                            or exc.code == "verification_failed"
                             else "操作未执行：日程已变化或出现冲突，请重新查询。"
                         ),
                     }
@@ -165,7 +191,8 @@ class Store:
                 "UPDATE proposals SET status=?, result=? WHERE id=?",
                 (result["status"], json.dumps(result, ensure_ascii=False), proposal_id),
             )
-            conn.execute("UPDATE sessions SET state=? WHERE id=?", ("{}", sid))
+            if approve:
+                conn.execute("UPDATE sessions SET state=? WHERE id=?", ("{}", sid))
             # Persist the factual receipt in the same transaction as the mutation.
             turns = json.loads(
                 conn.execute("SELECT turns FROM sessions WHERE id=?", (sid,)).fetchone()["turns"]
@@ -181,6 +208,17 @@ class Store:
                 (json.dumps(turns[-12:], ensure_ascii=False), sid),
             )
             return result
+
+    def choose_plan(self, sid, plan_id):
+        from scheduler.conflicts import validate_case
+
+        case = self.session(sid)["state"].get("conflict")
+        validate_case(self, case)
+        plan = next((p for p in case["plans"] if p["id"] == plan_id), None)
+        if not plan:
+            raise CalendarError("plan_not_found")
+        self.calendar.prepare_batch(plan["changes"])
+        return self.propose(sid, "batch", {"changes": plan["changes"], "context": case})
 
     def claim_request(self, sid, request_id):
         with self.calendar.transaction() as conn:

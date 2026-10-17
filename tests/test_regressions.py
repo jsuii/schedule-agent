@@ -86,7 +86,15 @@ def test_request_cache_durable_and_incomplete_requests_do_not_repeat(store):
 def test_tool_schema_is_json_and_unknown_fields_are_rejected(store):
     from scheduler.tools import SCHEMAS, Tools
 
-    assert len(json.loads(json.dumps(SCHEMAS))) == 6
+    assert {s["function"]["name"] for s in json.loads(json.dumps(SCHEMAS))} == {
+        "search_events",
+        "find_slots",
+        "ask_user",
+        "propose_create",
+        "propose_update",
+        "propose_delete",
+        "propose_resolution",
+    }
     sid = store.new_session()
     assert (
         Tools(store, sid).execute("propose_create", {**event(), "confirmed": True})["error"]
