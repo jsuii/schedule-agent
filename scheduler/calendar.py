@@ -37,6 +37,7 @@ class EventInput(BaseModel):
     interruptibility: Literal[
         "unknown", "noninterruptible", "pausable", "resumable", "parallel"
     ] = "unknown"
+    coexistence_groups: list[str] = Field(default_factory=list, max_length=8)
     keep_time: bool = False
     minimum_minutes: int = Field(default=1, ge=1, le=10080)
     overlap_allowed: bool = False
@@ -268,7 +269,8 @@ class Calendar:
         """Explicit same-location, attention/travel consent; titles never authorize overlap."""
         if not all(e.get("overlap_allowed") and e.get("coexistence_verified") for e in (a, b)):
             return False
-        if not a.get("location") or a["location"] != b.get("location"):
+        paired = set(a.get("coexistence_groups", [])) & set(b.get("coexistence_groups", []))
+        if not paired and (not a.get("location") or a["location"] != b.get("location")):
             return False
         if any(e.get("interruptibility") == "parallel" for e in (a, b)):
             return True

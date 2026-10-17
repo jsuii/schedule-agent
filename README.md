@@ -2,7 +2,7 @@
 
 一个本地运行的网页日程助手：LLM 自主选择工具、多步检索与澄清；应用负责校验、冲突判断、安全确认和 SQLite 持久化。
 
-**当前状态：智能冲突工作流已接入网页。离线96通过、2个live默认跳过；本轮DeepSeek共25次请求、API报告US$0.0218568444，包含3个未通过的中间验收场景。** 已验证自定义多事件调整、暂停嵌套、固定冲突方案及原子确认；失败原因、修复、用量审计限制见[冲突验收](docs/CONFLICT_TEST_2026-10-17.md)。Gemini默认配置保留，未重试；未同步外部预约。
+**当前状态：单句多事件、跨轮草稿澄清与精简冲突UI已验证。离线109通过、2个live默认跳过；本轮真实DeepSeek11请求、105074 tokens、API报告US$0.021373094。** 原句“大扫除11–16、寄快递12点15分钟”已通过实际模型和网页验证，地点不串用；必要暂停/往返条件明确后统一原子确认。详见[本轮验收](docs/UX_TEST_2026-10-17.md)。Gemini默认未改，未同步外部预约。
 
 ## 已实现
 
@@ -108,7 +108,7 @@ python -m pytest -q
 sh scripts/check.sh
 ```
 
-当前结果及覆盖范围见 [TESTING.md](docs/TESTING.md)。本轮默认96通过2跳过；另以独立评估器执行真实冲突场景，未重跑这两项旧live。默认所有模型测试使用脚本替身或 HTTP mock，真实模型两项默认跳过；CRUD、SQLite、HTTP 接口和事务不是 mock。
+当前结果及覆盖范围见 [TESTING.md](docs/TESTING.md)。本轮默认109通过2跳过；另以独立评估器执行真实多事件场景，未重跑这两项旧live。默认所有模型测试使用脚本替身或 HTTP mock，真实模型两项默认跳过；CRUD、SQLite、HTTP 接口和事务不是 mock。
 
 ## 架构与文件
 
@@ -117,6 +117,7 @@ scheduler/
   provider.py       Model Protocol + OpenAI 兼容 HTTP 实现
   agent.py          有界自主工具循环、上下文、事实回复
   tools.py          参数 schema、候选门控、写入提案、澄清字段
+  tasks.py          逐事件草稿、关系、窄澄清与统一方案
   conflicts.py      冲突事实、候选方案、原请求硬约束与快照校验
   calendar.py       时区、检索、冲突、空档、事务 CRUD 与读回
   storage.py        持久化会话、提案、确认、幂等请求

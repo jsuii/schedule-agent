@@ -154,9 +154,14 @@ def validate_case(store, case, conn=None):
             raise CalendarError("stale_plan", hint="相关日程已变化，旧方案失效，请重新分析")
 
 
-def validate_resolution(store, case, changes, conn=None):
+def validate_resolution(store, case, changes, conn=None, sid=None):
     """Bind the requested operation and its hard times to the proposed final set."""
     validate_case(store, case, conn)
+    if case.get("kind") == "task":
+        from scheduler.tasks import validate_task
+
+        validate_task(store, case["task"], changes, conn, sid=sid)
+        return
     requested, before = case["requested"], case.get("before")
     matches = [
         c

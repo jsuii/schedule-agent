@@ -2,3 +2,7 @@
 .intro .model-info{font-size:11px;line-height:1.6;overflow-wrap:anywhere;letter-spacing:.2px;margin:-10px 0 20px;color:var(--green)}
 
 .conflict-panel{border:1px solid #ba8648;background:#fff9ee;border-radius:16px;padding:18px;margin:12px 0}.conflict-panel pre,.proposal pre{white-space:pre-wrap;overflow-wrap:anywhere}.overlap{font-weight:700;color:#845220}.resolution-plan{border-top:1px solid #dfd6c7;padding:12px 0}.resolution-plan p{font-size:13px}.conflict-custom{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.conflict-custom input{flex:1;min-width:180px;padding:10px;border:1px solid #cbbda8;border-radius:8px}
+
+.conflict-panel h3{display:inline-block;margin:0 8px 8px 0}.conflict-status{font-size:12px;color:#846442}.conflict-panel .overlap{font-size:13px;font-weight:500;margin:6px 0}.conflict-panel h4{margin:6px 0}.conflict-panel details{font-size:13px;margin:8px 0}.conflict-panel summary{cursor:pointer;color:#466348}.conflict-panel .resolution-plan>p{margin:5px 0}.conflict-panel .resolution-plan button{margin-top:8px}.conflict-panel .conflict-custom{flex-wrap:nowrap}.conflict-custom input{min-width:0}.conflict-custom button{flex-shrink:0}
+
+.message.success{border-left:3px solid #3c7852;background:#eef6ed}.message.cancelled{border-left:3px solid #a39478;background:#f3f0e9}

@@ -77,7 +77,11 @@ class Store:
             from scheduler.conflicts import validate_resolution
 
             if payload.get("context"):
-                validate_resolution(self, payload["context"], payload["changes"])
+                validate_resolution(self, payload["context"], payload["changes"], sid=sid)
+            if payload.get("task"):
+                from scheduler.tasks import validate_task
+
+                validate_task(self, payload["task"], payload["changes"], sid=sid)
             payload = {**payload, "preview": self.calendar.prepare_batch(payload["changes"])}
         self.invalidate(sid)
         proposal_id = uuid4().hex
@@ -140,7 +144,13 @@ class Store:
                         from scheduler.conflicts import validate_resolution
 
                         if payload.get("context"):
-                            validate_resolution(self, payload["context"], payload["changes"], conn)
+                            validate_resolution(
+                                self, payload["context"], payload["changes"], conn, sid=sid
+                            )
+                        if payload.get("task"):
+                            from scheduler.tasks import validate_task
+
+                            validate_task(self, payload["task"], payload["changes"], conn, sid=sid)
                         events = self.calendar.apply_batch(payload["changes"], conn)
                         event = {"changes": events}
                     elif row["action"] == "create":

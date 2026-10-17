@@ -94,6 +94,7 @@ def test_tool_schema_is_json_and_unknown_fields_are_rejected(store):
         "propose_update",
         "propose_delete",
         "propose_resolution",
+        "stage_task",
     }
     sid = store.new_session()
     assert (

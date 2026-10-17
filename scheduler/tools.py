@@ -93,11 +93,37 @@ class Resolution(Arguments):
     changes: list[Change] = Field(min_length=1, max_length=8)
 
 
+class DraftIntent(Arguments):
+    intent_id: str = Field(min_length=1, max_length=64)
+    action: Literal["create", "update"] | None = None
+    event_id: str | None = None
+    version: int | None = Field(default=None, ge=1)
+    event: Patch | None = None
+
+
+class Relation(Arguments):
+    first: str
+    second: str
+    kind: Literal["interrupt", "parallel", "sequential"] | None = None
+    confirmed: bool | None = None
+    travel_included: bool | None = None
+    attention_verified: bool | None = None
+
+
+class TaskDraft(Arguments):
+    intents: list[DraftIntent] = Field(default_factory=list, max_length=8)
+    relations: list[Relation] = Field(default_factory=list, max_length=16)
+
+
 class Delete(Arguments):
     event_id: str
 
 
 TOOLS = {
+    "stage_task": (
+        TaskDraft,
+        "一句话包含多个事件或需要多轮补全时，先用此工具保存所有独立意图（包括不完整事件）。intents用稳定intent_id，event仅含该事件已知字段；未提地点留空，不继承其他事件地点。后续只传同intent_id的补充字段，不省略已知事件重新开始。关系first/second用intent_id；kind interrupt表示first可暂停容纳second，parallel表示并行，sequential表示first须先完成。仅用户明确允许时confirmed=true；往返包含在所填时间且注意力已核实时分别travel_included/attention_verified=true，否则不要猜测。只更新关系可传intents=[]。程序自动给窄澄清/冲突方案或统一提案，本轮结束。",
+    ),
     "propose_resolution": (
         Resolution,
         "统一提出多个创建/修改，最终状态整体校验。changes 数组：create 用 event(title/start/end...)；update 用 event_id、整数 version、嵌套 patch(仅变更字段)。ID/version 必须来自本会话观测或当前冲突上下文。保留当前冲突中的新事件时必须包含 create，不得漏掉。不直接写入。",
@@ -127,13 +153,31 @@ TOOLS = {
         "提出删除唯一已检索目标；多候选需要用户先选择。只生成待确认提案，本轮结束。",
     ),
 }
+
+
+def public_schema(model):
+    schema = model.model_json_schema()
+
+    def strip_private(node):
+        if isinstance(node, dict):
+            node.get("properties", {}).pop("coexistence_groups", None)
+            for child in node.values():
+                strip_private(child)
+        elif isinstance(node, list):
+            for child in node:
+                strip_private(child)
+
+    strip_private(schema)
+    return schema
+
+
 SCHEMAS = [
     {
         "type": "function",
         "function": {
             "name": name,
             "description": description,
-            "parameters": schema.model_json_schema(),
+            "parameters": public_schema(schema),
         },
     }
     for name, (schema, description) in TOOLS.items()
@@ -157,6 +201,19 @@ class Tools:
     def execute(self, name, arguments):
         if name not in TOOLS:
             return {"error": "unknown_tool", "hint": "请使用提供的工具名称"}
+        private_events = []
+        if isinstance(arguments, dict):
+            if name == "propose_create":
+                private_events.append(arguments)
+            elif name == "propose_resolution" and isinstance(arguments.get("changes"), list):
+                private_events.extend(
+                    c.get("event", {}) for c in arguments["changes"] if isinstance(c, dict)
+                )
+        if any(isinstance(e, dict) and "coexistence_groups" in e for e in private_events):
+            return {
+                "error": "invalid_arguments",
+                "hint": "配对授权由服务端生成；请用stage_task说明用户明确的事件关系，不得传入内部授权字段",
+            }
         try:
             value = TOOLS[name][0].model_validate(arguments)
         except ValidationError as exc:
@@ -183,6 +240,16 @@ class Tools:
             return {"error": "invalid_arguments", "hint": "日期、时长或字段无效，请向用户核实"}
 
     def _execute(self, name, value):
+        if name == "stage_task":
+            from scheduler.tasks import stage
+
+            return stage(self, value)
+
+        if self.state.get("task") and name.startswith("propose_"):
+            raise CalendarError(
+                "pending_task",
+                hint="当前有多事件草稿，请用stage_task同一intent_id补充/调整，统一提案以免漏掉其他事件",
+            )
         if name == "propose_resolution":
             from scheduler.conflicts import validate_case, validate_resolution
 
@@ -285,7 +352,7 @@ class Tools:
                 (e for e in self.state.get("candidates", []) if e["id"] == selected), None
             )
             self.state = {
-                **({"conflict": self.state["conflict"]} if self.state.get("conflict") else {}),
+                **{k: self.state[k] for k in ("conflict", "task") if k in self.state},
                 "candidates": events[:50],
                 "truncated": len(events) > 50,
                 "search": value.model_dump(),
